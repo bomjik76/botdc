@@ -271,6 +271,9 @@ class LeaveButtonPuk(Button):
             
             # Останавливаем случайные пуки
             self.puk_button.is_playing = False
+            if hasattr(self.puk_button, 'puk_task') and self.puk_button.puk_task:
+                self.puk_button.puk_task.cancel()
+                self.puk_button.puk_task = None
             
             # Останавливаем текущее воспроизведение
             if voice_client and voice_client.is_playing():
