@@ -135,7 +135,7 @@ class KickRandomButton(Button):
             # Исключаем ботов из списка
             real_members = [m for m in members if not m.bot]
             
-            if len(real_members) < 2:
+            if len(real_members) >= 2:
                 await interaction.followup.send("В канале недостаточно участников!", ephemeral=True)
                 return
                 
