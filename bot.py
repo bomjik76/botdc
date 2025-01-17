@@ -1,20 +1,158 @@
 import discord
 from discord.ext import commands
-from discord import FFmpegPCMAudio, ButtonStyle, PCMVolumeTransformer
-from discord.ui import Button, View
-import random
-import os
 import asyncio
+import random
 
-TOKEN = ''
-
-# Создаем бота
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Словарь с радиостанциями
-RADIO_STATIONS = {
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Список звуковых файлов для воспроизведения
+sound_files = ["puk.mp3"]
+
+# Переменные для управления воспроизведением звука и радио
+is_playing_puk = False
+voice_client = None
+current_radio = None  # Добавляем переменную для хранения текущей радиостанции
+
+# Добавьте переменную для хранения сообщения
+radio_message = None
+
+# Функция для случайного воспроизведения звука
+async def play_random_puk(voice_client):
+    global is_playing_puk, current_radio
+    while is_playing_puk:
+        try:
+            delay = random.randint(60, 120)
+            await asyncio.sleep(delay)
+
+            if not is_playing_puk:
+                break
+
+            # Сохраняем URL радио
+            radio_url = None
+            if voice_client.is_playing():
+                try:
+                    args = voice_client.source._process.args
+                    for arg in args:
+                        if 'http' in str(arg):
+                            radio_url = arg
+                            break
+                    voice_client.stop()
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"Ошибка сохранения радио: {e}")
+
+            # Воспроизводим 5 пуков
+            for _ in range(5):
+                if not is_playing_puk or not voice_client.is_connected():
+                    break
+
+                try:
+                    audio_source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio('puk.mp3'), volume=3.0)
+                    voice_client.play(audio_source)
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"Ошибка пука: {e}")
+
+            # Возвращаем радио
+            if radio_url:
+                try:
+                    await asyncio.sleep(1)
+                    if voice_client.is_connected():
+                        voice_client.play(discord.FFmpegPCMAudio(radio_url))
+                except Exception as e:
+                    print(f"Ошибка возврата радио: {e}")
+
+        except Exception as e:
+            print(f"Ошибка в цикле: {e}")
+            await asyncio.sleep(1)
+
+    print("Цикл воспроизведения пуков завершен")
+
+# Команда /puk
+class PukView(discord.ui.View):
+    def __init__(self):
+        super().__init__()
+        self.puk_button = PukButton()
+        self.add_item(self.puk_button)
+        self.add_item(LeaveButtonPuk(self.puk_button))
+
+class PukButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="💨 Пукать", style=discord.ButtonStyle.primary)
+        self.is_playing = False
+
+    async def callback(self, interaction: discord.Interaction):
+        global is_playing_puk, voice_client
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.user.voice:
+            await interaction.followup.send("Вы должны находиться в голосовом канале!", ephemeral=True)
+            return
+
+        voice_client = interaction.guild.voice_client
+
+        if voice_client is None or not voice_client.is_connected():
+            try:
+                voice_client = await interaction.user.voice.channel.connect()
+            except Exception as e:
+                await interaction.followup.send("Ошибка подключения к каналу.", ephemeral=True)
+                return
+        elif voice_client.channel != interaction.user.voice.channel:
+            await voice_client.move_to(interaction.user.voice.channel)
+
+        is_playing_puk = True
+        asyncio.create_task(play_random_puk(voice_client))
+
+class LeaveButtonPuk(discord.ui.Button):
+    def __init__(self, puk_button):
+        super().__init__(label="Перестать пукать", style=discord.ButtonStyle.danger)
+        self.puk_button = puk_button
+
+    async def callback(self, interaction: discord.Interaction):
+        global is_playing_puk, voice_client
+        await interaction.response.defer(ephemeral=True)
+
+        is_playing_puk = False
+        if voice_client and voice_client.is_playing():
+            voice_client.stop()
+
+        await interaction.followup.send("Пуки остановлены.", ephemeral=True)
+
+@bot.slash_command(name="puk", description="Запустить случайные пуки в голосовом канале.")
+async def puk(ctx):
+    view = PukView()
+    await ctx.respond("Случайные пуки:", view=view)
+
+# Команда /kick
+class KickView(discord.ui.View):
+    @discord.ui.button(label="Случайное исключение", style=discord.ButtonStyle.danger)
+    async def random_kick(self, button: discord.ui.Button, interaction: discord.Interaction):
+        if not interaction.user.voice:
+            await interaction.response.send_message("Вы должны находиться в голосовом канале.", ephemeral=True)
+            return
+
+        channel = interaction.user.voice.channel
+        members = [member for member in channel.members if not member.bot]
+
+        # Проверяем, что в канале минимум 2 участника (включая того, кто нажимает кнопку)
+        if len(members) < 2:
+            await interaction.response.send_message("В голосовом канале должно быть минимум 2 участника для исключения.", ephemeral=True)
+            return
+
+        member_to_kick = random.choice(members)
+        await member_to_kick.move_to(None)
+        await interaction.response.send_message(f"{member_to_kick.name} был исключен из голосового канала.")
+
+@bot.slash_command(name="kick", description="Исключить случайного участника из голосового канала.")
+async def kick(ctx):
+    view = KickView()
+    await ctx.respond("Нажмите, чтобы исключить случайного участника:", view=view)
+
+# Команда /radio
+radio_urls = {
     'геленджик': 'https://serv39.vintera.tv/radio_gel/radio_stream/icecast.audio',
     'кавказ': 'http://radio.alania.net:8000/kvk',
     'аниме': 'https://pool.anison.fm:9000/AniSonFM(320)?nocache=0.9834540412142996',
@@ -24,394 +162,86 @@ RADIO_STATIONS = {
     'jazz ': 'http://nashe1.hostingradio.ru/jazz-128.mp3'
 }
 
-class RadioButtons(View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        for station in RADIO_STATIONS.keys():
-            self.add_item(RadioButton(station))
-        self.add_item(PauseButton())
-        self.add_item(LeaveButton())
+class RadioView(discord.ui.View):
+    def __init__(self, radio_urls):
+        super().__init__()
+        self.radio_urls = radio_urls
+        self.add_radio_buttons()
 
-class RadioButton(Button):
-    def __init__(self, station):
-        super().__init__(label=station, style=ButtonStyle.primary)
-        self.station = station
-    
+    def add_radio_buttons(self):
+        for name in self.radio_urls:
+            button = discord.ui.Button(label=name, style=discord.ButtonStyle.primary)
+            button.callback = lambda i, n=name: self.play_radio(i, n)
+            self.add_item(button)
 
-    async def callback(self, interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
+        pause_resume_button = discord.ui.Button(label="Пауза/Возобновить", style=discord.ButtonStyle.secondary)
+        pause_resume_button.callback = self.pause_resume
+        self.add_item(pause_resume_button)
+
+        leave_channel_button = discord.ui.Button(label="Покинуть канал", style=discord.ButtonStyle.red)
+        leave_channel_button.callback = self.leave_channel
+        self.add_item(leave_channel_button)
+
+    async def play_radio(self, interaction: discord.Interaction, radio_name: str):
+        global voice_client
+        await interaction.response.defer()  # Отложить ответ
+        if interaction.user.voice and interaction.user.voice.channel:
+            channel = interaction.user.voice.channel
+            if not voice_client or not voice_client.is_connected():
+                voice_client = await channel.connect()
             
-            if not interaction.user.voice:
-                await interaction.followup.send("Вы должны находиться в голосовом канале!", ephemeral=True)
-                return
-
-            voice_client = interaction.guild.voice_client
-            
-            # Проверяем состояние подключения
-            try:
-                if voice_client and not voice_client.is_connected():
-                    await voice_client.disconnect()
-                    voice_client = None
-            except:
-                voice_client = None
-
-            # Создаем новое подключение если нужно
-            if voice_client is None:
-                try:
-                    voice_client = await interaction.user.voice.channel.connect()
-                except Exception as e:
-                    await interaction.followup.send("Ошибка подключения к каналу. Попробуйте еще раз.", ephemeral=True)
-                    return
-            elif voice_client.channel != interaction.user.voice.channel:
-                await voice_client.move_to(interaction.user.voice.channel)
-
-            # Останавливаем и начинаем воспроизведение
-            try:
-                if voice_client.is_playing():
-                    voice_client.stop()
-                voice_client.play(FFmpegPCMAudio(RADIO_STATIONS[self.station]))
-            except Exception as e:
-                await interaction.followup.send("Ошибка воспроизведения. Попробуйте переподключить бота командой !leave и затем !radio", ephemeral=True)
-                
-        except Exception as e:
-            await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
-
-class PauseButton(Button):
-    def __init__(self):
-        super().__init__(label="⏯️ Пауза", style=ButtonStyle.secondary)
-        
-    async def callback(self, interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            voice_client = interaction.guild.voice_client
-            
-            if not voice_client:
-                await interaction.followup.send("Бот не находится в голосовом канале!", ephemeral=True)
-                return
-                
+            source = discord.FFmpegPCMAudio(self.radio_urls[radio_name])
             if voice_client.is_playing():
-                voice_client.pause()
-            elif voice_client.is_paused():
-                voice_client.resume()
-            else:
-                await interaction.followup.send("Нечего приостанавливать!", ephemeral=True)
-                
-        except Exception as e:
-            await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
+                voice_client.stop()  # Останавливаем текущий поток перед переключением
+            voice_client.play(source)
+            await interaction.response.send_message(content="Радиостанция переключена.")  # Отправляем подтверждение
+        else:
+            await interaction.response.send_message("Вы должны находиться в голосовом канале.")
 
-class LeaveButton(Button):
-    def __init__(self):
-        super().__init__(label="Выход", style=ButtonStyle.danger)
-        
-    async def callback(self, interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            voice_client = interaction.guild.voice_client
-            
-            if voice_client:
-                await voice_client.disconnect()
-            else:
-                await interaction.followup.send("Бот не находится в голосовом канале!", ephemeral=True)
-                
-        except Exception as e:
-            await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
+    async def pause_resume(self, interaction: discord.Interaction):
+        await interaction.response.defer()  # Отложить ответ
+        if voice_client and voice_client.is_playing():
+            voice_client.pause()
+        elif voice_client and voice_client.is_paused():
+            voice_client.resume()
+        else:
+            await interaction.followup.send("В данный момент ничего не воспроизводится.", ephemeral=True)
 
-class KickRandomButton(Button):
-    def __init__(self):
-        super().__init__(label="🎲 Исключить случайного", style=ButtonStyle.danger)
-        
-    async def callback(self, interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            
-            if not interaction.user.voice:
-                await interaction.followup.send("Вы должны находиться в голосовом канале!", ephemeral=True)
-                return
-                
-            voice_channel = interaction.user.voice.channel
-            members = voice_channel.members
-            
-            # Исключаем ботов из списка
-            real_members = [m for m in members if not m.bot]
-            
-            if len(real_members) >= 2:
-                await interaction.followup.send("В канале недостаточно участников!", ephemeral=True)
-                return
-                
-            # Используем random.choice для выбора случайного участника
-            victim = random.choice(real_members)
-            
-            try:
-                await victim.move_to(None)
-                await interaction.followup.send(f"🎲 Случайный выбор пал на {victim.display_name}!", ephemeral=False)
-            except discord.Forbidden:
-                await interaction.followup.send("У меня недостаточно прав для исключения участников!", ephemeral=True)
-                
-        except Exception as e:
-            await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
+    async def leave_channel(self, interaction: discord.Interaction):
+        if voice_client and voice_client.is_connected():
+            await voice_client.disconnect()
+        else:
+            await interaction.response.send_message("Бот не подключен к голосовому каналу.")
 
-class PukButton(Button):
-    def __init__(self):
-        super().__init__(label="💨 Пукать", style=ButtonStyle.primary)
-        self.is_playing = False
-        
-    async def play_random_puk(self, voice_client):
-        while self.is_playing:
-            try:
-                delay = random.randint(60, 120)
-                await asyncio.sleep(delay)
-                
-                if not self.is_playing:
-                    break
-                
-                # Сохраняем URL радио
-                radio_url = None
-                if voice_client.is_playing():
-                    try:
-                        # Более надежный способ получения URL
-                        args = voice_client.source._process.args
-                        for arg in args:
-                            if 'http' in str(arg):
-                                radio_url = arg
-                                break
-                        print(f"Сохранен URL радио: {radio_url}")  # Для отладки
-                        voice_client.stop()
-                        await asyncio.sleep(1)
-                    except Exception as e:
-                        print(f"Ошибка сохранения радио: {e}")
-                
-                # Воспроизводим 5 пуков
-                for _ in range(5):
-                    if not self.is_playing or not voice_client.is_connected():
-                        break
-                    
-                    try:
-                        # Увеличиваем громкость в 3 раза
-                        audio_source = PCMVolumeTransformer(FFmpegPCMAudio('puk.mp3'), volume=3.0)
-                        voice_client.play(audio_source)
-                        await asyncio.sleep(1)
-                    except Exception as e:
-                        print(f"Ошибка пука: {e}")
-                
-                # Возвращаем радио
-                if radio_url:
-                    try:
-                        print(f"Попытка возврата радио: {radio_url}")  # Для отладки
-                        await asyncio.sleep(1)
-                        if voice_client.is_connected():
-                            voice_client.play(FFmpegPCMAudio(radio_url))
-                            print("Радио возобновлено")  # Для отладки
-                    except Exception as e:
-                        print(f"Ошибка возврата радио: {e}")
-                        
-            except Exception as e:
-                print(f"Ошибка в цикле: {e}")
-                await asyncio.sleep(1)
-                
-        print("Цикл воспроизведения пуков завершен")
+async def update_radio_buttons(ctx):
+    global radio_message
+    while True:
+        await asyncio.sleep(300)  # Обновляем каждые 5 минут
+        view = RadioView(radio_urls)
+        if radio_message:
+            await radio_message.edit(content="Обновление кнопок радио:", view=view)
+        else:
+            radio_message = await ctx.send("Обновление кнопок радио:", view=view)
 
-    async def callback(self, interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            
-            if not interaction.user.voice:
-                await interaction.followup.send("Вы должны находиться в голосовом канале!", ephemeral=True)
-                return
+@bot.slash_command(name="radio", description="Выбрать радиостанцию для воспроизведения в голосовом канале.")
+async def radio(ctx):
+    global radio_message
+    view = RadioView(radio_urls)
+    radio_message = await ctx.respond("Выберите радиостанцию:", view=view)
+    bot.loop.create_task(update_radio_buttons(ctx))
 
-            voice_client = interaction.guild.voice_client
-            
-            # Проверяем состояние подключения
-            try:
-                if voice_client and not voice_client.is_connected():
-                    await voice_client.disconnect()
-                    voice_client = None
-            except:
-                voice_client = None
+@bot.slash_command(name="refresh_radio", description="Обновить список радиостанций.")
+async def refresh_radio(ctx):
+    view = RadioView(radio_urls)
+    await ctx.respond("Выберите радиостанцию:", view=view)
 
-            # Создаем новое подключение если нужно
-            if voice_client is None:
-                try:
-                    voice_client = await interaction.user.voice.channel.connect()
-                except Exception as e:
-                    await interaction.followup.send("Ошибка подключения к каналу.", ephemeral=True)
-                    return
-            elif voice_client.channel != interaction.user.voice.channel:
-                await voice_client.move_to(interaction.user.voice.channel)
-
-            # Включаем режим случайного воспроизведения
-            self.is_playing = True         
-            # Запускаем бесконечный цикл случайных пуков
-            asyncio.create_task(self.play_random_puk(voice_client))
-                
-        except Exception as e:
-            await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
-
-class LeaveButtonPuk(Button):
-    def __init__(self, puk_button):
-        super().__init__(label="Перестать пукать", style=ButtonStyle.danger)
-        self.puk_button = puk_button
-        
-    async def callback(self, interaction):
-        try:
-            await interaction.response.defer(ephemeral=True)
-            voice_client = interaction.guild.voice_client
-            
-            # Сохраняем URL радио до остановки пуков
-            radio_url = None
-            if voice_client and voice_client.is_playing():
-                try:
-                    args = voice_client.source._process.args
-                    for arg in args:
-                        if 'http' in str(arg):
-                            radio_url = arg
-                            break
-                except Exception as e:
-                    print(f"Ошибка сохранения URL радио: {e}")
-            
-            # Останавливаем случайные пуки
-            self.puk_button.is_playing = False
-            if hasattr(self.puk_button, 'puk_task') and self.puk_button.puk_task:
-                self.puk_button.puk_task.cancel()
-                self.puk_button.puk_task = None
-            
-            # Останавливаем текущее воспроизведение
-            if voice_client and voice_client.is_playing():
-                voice_client.stop()
-            
-            # Ждем немного и восстанавливаем радио
-            if radio_url:
-                await asyncio.sleep(0.1)
-                try:
-                    if voice_client and voice_client.is_connected():
-                        voice_client.play(FFmpegPCMAudio(radio_url))
-                        print(f"Радио восстановлено: {radio_url}")
-                except Exception as e:
-                    print(f"Ошибка восстановления радио: {e}")
-                    
-        except Exception as e:
-            await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
-
-@bot.event
-async def on_ready():
-    print(f'Бот {bot.user} готов к работе!')
-
-@bot.command(help="Присоединиться к голосовому каналу")
-async def join(ctx):
-    """Присоединиться к голосовому каналу"""
-    await ctx.author.voice.channel.connect()
-
-@bot.command(help="Покинуть голосовой канал")
-async def leave(ctx):
-    """Покинуть голосовой канал"""
-    if ctx.voice_client:
-        await ctx.guild.voice_client.disconnect()
-    else:
-        await ctx.send("Бот не находится в голосовом канале!")
-
-@bot.command(help="Поставить на паузу")
-async def pause(ctx):
-    """Поставить на паузу"""
-    voice_client = ctx.guild.voice_client
-    if voice_client.is_playing():
-        voice_client.pause()
-    else:
-        await ctx.send("В данный момент ничего не воспроизводится!")
-
-@bot.command(help="Продолжить воспроизведение")
-async def resume(ctx):
-    """Продолжить воспроизведение"""
-    voice_client = ctx.guild.voice_client
-    if voice_client.is_paused():
-        voice_client.resume()
-    else:
-        await ctx.send("Воспроизведение не на паузе!")
-
-@bot.command(help="Остановить воспроизведение")
-async def stop(ctx):
-    """Остановить воспроизведение"""
-    voice_client = ctx.guild.voice_client
-    if voice_client.is_playing():
-        voice_client.stop()
-    else:
-        await ctx.send("В данный момент ничего не воспроизводится!")
-
-@bot.command(help="Воспроизвести радио")
-async def radio(ctx, station=None):
-    """Воспроизвести радио"""
-    if station is None:
-        view = RadioButtons()
-        await ctx.send('Радио 🎵', view=view)
-        return
-
-    if station not in RADIO_STATIONS:
-        await ctx.send('Такой радиостанции нет в списке!')
-        return
-
-    try:
-        voice_client = ctx.voice_client
-        if voice_client is None:
-            voice_client = await ctx.author.voice.channel.connect()
-        elif voice_client.channel != ctx.author.voice.channel:
-            await voice_client.move_to(ctx.author.voice.channel)
-
-        if voice_client.is_playing():
-            voice_client.stop()
-
-        voice_client.play(FFmpegPCMAudio(RADIO_STATIONS[station]))
-    except Exception as e:
-        await ctx.send(f"Произошла ошибка при воспроизведении: {str(e)}")
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """Обработчик изменений в голосовом канале"""
-    if member == bot.user:
-        if after.channel is None:  # Бот был отключен
-            for guild in bot.guilds:
-                voice_client = guild.voice_client
-                if voice_client:
-                    try:
-                        await voice_client.disconnect()
-                    except:
-                        pass
-        elif before.channel != after.channel:  # Бот был перемещен
-            voice_client = member.guild.voice_client
-            if voice_client and voice_client.is_playing():
-                try:
-                    # Сохраняем текущий источник
-                    current_source = voice_client.source._process.args[-1]
-                    voice_client.pause()
-                    await asyncio.sleep(0.5)
-                    # Восстанавливаем воспроизведение
-                    voice_client.play(FFmpegPCMAudio(current_source))
-                except Exception as e:
-                    print(f"Ошибка восстановления аудио после перемещения: {e}")
-
-@bot.command(help="Показать кнопку для исключения случайного участника")
-async def kick(ctx):
-    """Показать кнопку для исключения случайного участника"""
-    view = View()
-    view.add_item(KickRandomButton())
-    await ctx.send("Нажмите кнопку, чтобы исключить случайного участника:", view=view)
-
-@bot.command(help="Показать кнопки для пука")
-async def puk(ctx):
-    """Показать кнопки для пука"""
-    puk_button = PukButton()
-    view = View()
-    view.add_item(puk_button)
-    view.add_item(LeaveButtonPuk(puk_button))
-    await ctx.send("Случайные пуки:", view=view)
-
-@bot.command(help="Очистить все сообщения бота в канале")
+@bot.slash_command(name="clear", description="Очистить чат от сообщений бота и команд.")
 async def clear(ctx):
-    """Очистить все сообщения бота в канале"""
-    def is_bot_message(message):
-        return message.author == bot.user
+    def is_bot_or_command_message(message):
+        return message.author == bot.user or message.content.startswith('/')
 
-    deleted = await ctx.channel.purge(limit=100, check=is_bot_message)
-    await ctx.send(f"Удалено {len(deleted)} сообщений бота.", delete_after=5)
+    deleted = await ctx.channel.purge(limit=100, check=is_bot_or_command_message)
+    await ctx.respond(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
 
-# Замените 'YOUR_TOKEN' на переменную TOKEN
-bot.run(TOKEN)
-
+# Запуск бота
+bot.run('')
