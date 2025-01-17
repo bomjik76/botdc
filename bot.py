@@ -1,5 +1,6 @@
 import discord
 from discord.ext import commands
+from discord import FFmpegPCMAudio, ButtonStyle, PCMVolumeTransformer
 import asyncio
 import random
 
