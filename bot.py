@@ -16,9 +16,21 @@ sound_files = ["puk.mp3"]
 is_playing_puk = False
 voice_client = None
 current_radio = None  # Добавляем переменную для хранения текущей радиостанции
-
 # Добавьте переменную для хранения сообщения
 radio_message = None
+
+#Переменные
+ADMIN_USER_ID = 480402325786329091  # Замените 123456789 на ваш ID
+# Команда /radio
+radio_urls = {
+    'геленджик': 'https://serv39.vintera.tv/radio_gel/radio_stream/icecast.audio',
+    'кавказ': 'http://radio.alania.net:8000/kvk',
+    'аниме': 'https://pool.anison.fm:9000/AniSonFM(320)?nocache=0.9834540412142996',
+    'чил': 'http://node-33.zeno.fm/0r0xa792kwzuv?rj-ttl=5&rj-tok=AAABfMtdjJ4AtC1pGWo1_ohFMw',
+    'lofi': 'http://stream.zeno.fm/f3wvbbqmdg8uv',
+    'кубань': 'http://stream.pervoe.fm:8000',
+    'jazz ': 'http://nashe1.hostingradio.ru/jazz-128.mp3'
+}
 
 # Функция для случайного воспроизведения звука
 async def play_random_puk(voice_client):
@@ -51,11 +63,17 @@ async def play_random_puk(voice_client):
                     break
 
                 try:
-                    audio_source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio('puk.mp3'), volume=3.0)
+                    audio_source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio('/home/bot/puk.mp3'), volume=3.0)
                     voice_client.play(audio_source)
-                    await asyncio.sleep(1)
+                    
+                    # Ждем, пока звук не закончится
+                    while voice_client.is_playing():
+                        await asyncio.sleep(0.1)  # Проверяем каждые 100 мс
                 except Exception as e:
                     print(f"Ошибка пука: {e}")
+
+            # Добавляем задержку перед следующим воспроизведением
+            await asyncio.sleep(1)  # Задержка перед следующим циклом
 
             # Возвращаем радио
             if radio_url:
@@ -113,14 +131,14 @@ class LeaveButtonPuk(discord.ui.Button):
         self.puk_button = puk_button
 
     async def callback(self, interaction: discord.Interaction):
-        global is_playing_puk, voice_client
+        global is_playing_puk
         await interaction.response.defer(ephemeral=True)
 
         is_playing_puk = False
-        if voice_client and voice_client.is_playing():
-            voice_client.stop()
 
-        await interaction.followup.send("Пуки остановлены.", ephemeral=True)
+        message = await interaction.followup.send("Пуки остановлены.", ephemeral=True)
+        await asyncio.sleep(5)  # Ждем 5 секунд перед удалением
+        await message.delete()  # Удаляем сообщение
 
 @bot.slash_command(name="puk", description="Запустить случайные пуки в голосовом канале.")
 async def puk(ctx):
@@ -138,30 +156,19 @@ class KickView(discord.ui.View):
         channel = interaction.user.voice.channel
         members = [member for member in channel.members if not member.bot]
 
-        # Проверяем, что в канале минимум 2 участника (включая того, кто нажимает кнопку)
-        if len(members) < 2:
+        # Проверяем, что в канале только 1 участник (включая того, кто нажимает кнопку)
+        if len(members) > 1:
+            member_to_kick = random.choice(members)
+            await member_to_kick.move_to(None)
+            await interaction.response.send_message(f"{member_to_kick.name} был исключен из голосового канала.")
+        else:
             await interaction.response.send_message("В голосовом канале должно быть минимум 2 участника для исключения.", ephemeral=True)
-            return
-
-        member_to_kick = random.choice(members)
-        await member_to_kick.move_to(None)
-        await interaction.response.send_message(f"{member_to_kick.name} был исключен из голосового канала.")
 
 @bot.slash_command(name="kick", description="Исключить случайного участника из голосового канала.")
 async def kick(ctx):
     view = KickView()
     await ctx.respond("Нажмите, чтобы исключить случайного участника:", view=view)
 
-# Команда /radio
-radio_urls = {
-    'геленджик': 'https://serv39.vintera.tv/radio_gel/radio_stream/icecast.audio',
-    'кавказ': 'http://radio.alania.net:8000/kvk',
-    'аниме': 'https://pool.anison.fm:9000/AniSonFM(320)?nocache=0.9834540412142996',
-    'чил': 'http://node-33.zeno.fm/0r0xa792kwzuv?rj-ttl=5&rj-tok=AAABfMtdjJ4AtC1pGWo1_ohFMw',
-    'lofi': 'http://stream.zeno.fm/f3wvbbqmdg8uv',
-    'кубань': 'http://stream.pervoe.fm:8000',
-    'jazz ': 'http://nashe1.hostingradio.ru/jazz-128.mp3'
-}
 
 class RadioView(discord.ui.View):
     def __init__(self, radio_urls):
@@ -242,6 +249,15 @@ async def clear(ctx):
         return message.author == bot.user or message.content.startswith('/')
 
     deleted = await ctx.channel.purge(limit=100, check=is_bot_or_command_message)
+    await ctx.respond(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
+
+@bot.slash_command(name="clearall", description="Очистить чат от всех сообщений.")
+async def clearall(ctx):
+    if ctx.author.id != ADMIN_USER_ID:  # Проверка на права
+        await ctx.respond("У вас нет прав на выполнение этой команды.", ephemeral=True)
+        return
+
+    deleted = await ctx.channel.purge(limit=None)  # Удаляем все сообщения
     await ctx.respond(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
 
 # Запуск бота
