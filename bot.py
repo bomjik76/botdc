@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import FFmpegPCMAudio, ButtonStyle, PCMVolumeTransformer
 import asyncio
 import random
@@ -31,6 +31,22 @@ radio_urls = {
     'кубань': 'http://stream.pervoe.fm:8000',
     'jazz ': 'http://nashe1.hostingradio.ru/jazz-128.mp3'
 }
+
+# ID канала для очистки
+CLEAR_CHANNEL_ID = 1329025201681334272
+
+@tasks.loop(hours=24)  # Задача, выполняющаяся раз в 24 часа
+async def clear_channel_daily():
+    channel = bot.get_channel(CLEAR_CHANNEL_ID)
+
+    if channel:
+        deleted = await channel.purge(limit=None)  # Удаляем все сообщения
+
+        print(f"Удалено {len(deleted)} сообщений из канала {CLEAR_CHANNEL_ID}.")
+
+@bot.event
+async def on_ready():
+    clear_channel_daily.start()  # Запускаем задачу при старте бота
 
 # Функция для случайного воспроизведения звука
 async def play_random_puk(voice_client):
