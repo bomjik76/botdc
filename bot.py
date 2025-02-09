@@ -3,6 +3,8 @@ from discord.ext import commands, tasks
 from discord import FFmpegPCMAudio, ButtonStyle, PCMVolumeTransformer
 import asyncio
 import random
+import datetime
+from g4f.client import Client
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -14,6 +16,7 @@ sound_files = ["puk.mp3"]
 
 # Переменные для управления воспроизведением звука и радио
 is_playing_puk = False
+is_playing_shiza = False
 voice_client = None
 current_radio = None  # Добавляем переменную для хранения текущей радиостанции
 # Добавьте переменную для хранения сообщения
@@ -21,6 +24,8 @@ radio_message = None
 
 #Переменные
 ADMIN_USER_ID = 480402325786329091  # Замените 123456789 на ваш ID
+VOICE_CHANNEL_ID = 1334607111694450708  # ID голосового канала для проверки
+TEXT_CHANNEL_ID = 1334606129015296010   # ID текстового канала для отправки сообщений
 # Команда /radio
 radio_urls = {
     'геленджик': 'https://serv39.vintera.tv/radio_gel/radio_stream/icecast.audio',
@@ -275,6 +280,112 @@ async def clearall(ctx):
 
     deleted = await ctx.channel.purge(limit=None)  # Удаляем все сообщения
     await ctx.respond(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
+
+class ShizaView(discord.ui.View):
+    def __init__(self):
+        super().__init__()
+        self.add_item(ShizaButton("Литвин", "/home/bot/litvin.mp3"))
+        self.add_item(ShizaButton("Сигма", "/home/bot/sigma.mp3"))
+        self.add_item(StopShizaButton())
+
+class ShizaButton(discord.ui.Button):
+    def __init__(self, label: str, file_path: str):
+        super().__init__(label=label, style=discord.ButtonStyle.primary)
+        self.file_path = file_path
+
+    async def callback(self, interaction: discord.Interaction):
+        global voice_client, is_playing_shiza
+        await interaction.response.defer()
+
+        if not interaction.user.voice:
+            await interaction.followup.send("Вы должны находиться в голосовом канале!", ephemeral=True)
+            return
+
+        voice_client = interaction.guild.voice_client
+
+        if voice_client is None:
+            voice_client = await interaction.user.voice.channel.connect()
+        elif voice_client.channel != interaction.user.voice.channel:
+            await voice_client.move_to(interaction.user.voice.channel)
+
+        if voice_client.is_playing():
+            voice_client.stop()
+
+        is_playing_shiza = True
+        asyncio.create_task(play_shiza_loop(voice_client, self.file_path))
+        await interaction.followup.send(f"Начинаю воспроизведение {self.label}!", ephemeral=True)
+
+class StopShizaButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Остановить", style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: discord.Interaction):
+        global is_playing_shiza
+        await interaction.response.defer()
+
+        if voice_client and voice_client.is_playing():
+            is_playing_shiza = False
+            voice_client.stop()
+            await interaction.followup.send("Воспроизведение остановлено!", ephemeral=True)
+        else:
+            await interaction.followup.send("Сейчас ничего не воспроизводится!", ephemeral=True)
+
+async def play_shiza_loop(voice_client, file_path):
+    global is_playing_shiza
+    while is_playing_shiza and voice_client and voice_client.is_connected():
+        try:
+            audio_source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio(file_path), volume=1.0)
+            voice_client.play(audio_source)
+            
+            # Ждем, пока текущее воспроизведение не закончится
+            while voice_client.is_playing():
+                await asyncio.sleep(0.1)
+                if not is_playing_shiza:
+                    voice_client.stop()
+                    return
+                    
+            # Небольшая пауза перед следующим воспроизведением
+            await asyncio.sleep(0.5)
+            
+        except Exception as e:
+            print(f"Ошибка воспроизведения: {e}")
+            break
+
+@bot.slash_command(name="shiza", description="Включить зацикленное воспроизведение песен")
+async def shiza(ctx):
+    view = ShizaView()
+    await ctx.respond("Выберите песню для воспроизведения:", view=view)
+
+@bot.slash_command(name="gpt", description="Сгенерировать текст с помощью GPT.")
+async def gpt(ctx, *, prompt: str):
+    client = Client()
+    models = ["gpt-4o-mini", "gpt-3.5-turbo"]  # Список моделей для перебора
+    await ctx.respond("Обработка запроса...")  # Уведомляем пользователя о начале обработки
+
+    loop = asyncio.get_event_loop()  # Получаем текущий цикл событий
+
+    for model in models:
+        try:
+            # Обертка для вызова функции с аргументами
+            def create_completion():
+                return client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    web_search=False
+                )
+
+            # Используем run_in_executor для выполнения синхронного метода в отдельном потоке
+            response = await loop.run_in_executor(None, create_completion)
+            await ctx.followup.send(response.choices[0].message.content)
+            return  # Выход из функции, если запрос успешен
+        except Exception as e:
+            print(f"Ошибка при использовании модели {model}: {e}")  # Отладочное сообщение
+
+    # Если все модели не сработали, проверяем, существует ли взаимодействие
+    try:
+        await ctx.followup.send("Все попытки генерации текста завершились неудачей.")
+    except Exception as e:
+        print(f"Ошибка при отправке сообщения об ошибке: {e}")  # Отладочное сообщение
 
 # Запуск бота
 bot.run('')
