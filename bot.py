@@ -385,16 +385,20 @@ async def gpt(ctx, *, prompt: str):
 
             # Используем run_in_executor для выполнения синхронного метода в отдельном потоке
             response = await loop.run_in_executor(None, create_completion)
-            await ctx.followup.send(response.choices[0].message.content)
+            
+            # Проверяем структуру ответа и получаем содержимое
+            if hasattr(response.choices[0], 'message'):
+                content = response.choices[0].message.content
+            else:
+                content = response.choices[0].content
+                
+            await ctx.followup.send(content)
             return  # Выход из функции, если запрос успешен
         except Exception as e:
             print(f"Ошибка при использовании модели {model}: {e}")  # Отладочное сообщение
 
-    # Если все модели не сработали, проверяем, существует ли взаимодействие
-    try:
-        await ctx.followup.send("Все попытки генерации текста завершились неудачей.")
-    except Exception as e:
-        print(f"Ошибка при отправке сообщения об ошибке: {e}")  # Отладочное сообщение
+    # Если все модели не сработали, отправляем сообщение об ошибке
+    await ctx.followup.send("Извините, произошла ошибка при обработке запроса. Попробуйте позже.")
 
 @bot.slash_command(name="image", description="Генерация изображения по запросу")
 async def image(ctx, *, prompt: str):
