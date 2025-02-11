@@ -396,6 +396,32 @@ async def gpt(ctx, *, prompt: str):
     except Exception as e:
         print(f"Ошибка при отправке сообщения об ошибке: {e}")  # Отладочное сообщение
 
+@bot.slash_command(name="image", description="Генерация изображения по запросу")
+async def image(ctx, *, prompt: str):
+    await ctx.defer()  # Defer the response since image generation might take time
+    
+    try:
+        client = Client()
+        response = await client.images.async_generate(
+            model="flux",
+            prompt=prompt,
+            response_format="url"
+        )
+        
+        if response and hasattr(response, 'data') and len(response.data) > 0:
+            image_url = response.data[0].url
+            
+            # Create embed with the image
+            embed = discord.Embed(title="Сгенерированное изображение", description=f"Запрос: {prompt}")
+            embed.set_image(url=image_url)
+            
+            await ctx.followup.send(embed=embed)
+        else:
+            await ctx.followup.send("Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+            
+    except Exception as e:
+        await ctx.followup.send(f"Произошла ошибка при генерации изображения: {str(e)}")
+
 @bot.slash_command(name="clear", description="Очистить чат от сообщений бота и команд.")
 async def clear(ctx):
     def is_bot_or_command_message(message):
