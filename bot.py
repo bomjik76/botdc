@@ -5,6 +5,8 @@ import asyncio
 import random
 import datetime
 from g4f.client import Client
+import sys
+import os
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -35,7 +37,7 @@ radio_urls = {
 }
 
 # ID канала для очистки
-CLEAR_CHANNEL_ID = 1329025201681334272
+CLEAR_CHANNEL_ID = 1340288513735917568
 
 @tasks.loop(hours=24)  # Задача, выполняющаяся раз в 24 часа
 async def clear_channel_daily():
@@ -48,6 +50,30 @@ async def clear_channel_daily():
 @bot.event
 async def on_ready():
     clear_channel_daily.start()  # Запускаем задачу при старте бота
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_delete, limit=1):
+        if entry.user.id != bot.user.id:  # Проверяем, что канал удалил не сам бот
+            try:
+                member = await channel.guild.fetch_member(entry.user.id)
+                if member:
+                    await member.kick(reason="ДАУН")
+                    # Отправляем сообщение в первый доступный текстовый канал
+                    for ch in channel.guild.text_channels:
+                        try:
+                            await ch.send(f"Пользователь {entry.user.name} был трахнут за удаление канала {channel.name}")
+                            break
+                        except:
+                            continue
+            except discord.Forbidden:
+                # Если у бота недостаточно прав для кика
+                for ch in channel.guild.text_channels:
+                    try:
+                        await ch.send(f"Не удалось кикнуть пользователя {entry.user.name} за удаление канала. Недостаточно прав.")
+                        break
+                    except:
+                        continue
 
 # Команда /kick
 class KickView(discord.ui.View):
@@ -75,7 +101,8 @@ async def kick(ctx):
 
 class RadioView(discord.ui.View):
     def __init__(self, radio_urls):
-        super().__init__()
+        # Устанавливаем timeout=None, чтобы кнопки были активны всегда
+        super().__init__(timeout=None)
         self.radio_urls = radio_urls
         self.volume = 1.0
         self.is_paused = False
@@ -112,14 +139,14 @@ class RadioView(discord.ui.View):
     async def radio_button_callback(self, interaction: discord.Interaction):
         global voice_client, current_radio, radio_message
         
-        station = interaction.custom_id.replace("radio_", "")
-        url = self.radio_urls[station]
-
-        if not interaction.user.voice:
-            await interaction.response.send_message("Вы должны быть в голосовом канале!", ephemeral=True)
-            return
-
         try:
+            station = interaction.custom_id.replace("radio_", "")
+            url = self.radio_urls[station]
+
+            if not interaction.user.voice:
+                await interaction.response.send_message("Вы должны быть в голосовом канале!", ephemeral=True)
+                return
+
             if voice_client and voice_client.is_connected():
                 if voice_client.channel != interaction.user.voice.channel:
                     await voice_client.move_to(interaction.user.voice.channel)
@@ -139,10 +166,26 @@ class RadioView(discord.ui.View):
             )
             embed.set_image(url="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExcWlmbzR1M21zNTh1N3UydXQ2bjBveHIzanQ3MThtbGoxeG8ydmwxZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/9zExs2Q2h1EHfE4P6G/giphy.gif")
 
-            await interaction.response.edit_message(embed=embed, view=self)
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            except discord.NotFound:
+                # Если взаимодействие истекло, отправляем новое сообщение
+                await interaction.channel.send(embed=embed, view=self)
+            except Exception as e:
+                # Для других ошибок пытаемся отправить новое сообщение
+                try:
+                    await interaction.channel.send(embed=embed, view=self)
+                except:
+                    pass
 
         except Exception as e:
-            await interaction.response.send_message(f"Ошибка: {str(e)}", ephemeral=True)
+            try:
+                await interaction.response.send_message(f"Ошибка воспроизведения: {str(e)}", ephemeral=True)
+            except discord.NotFound:
+                try:
+                    await interaction.channel.send(f"Ошибка воспроизведения: {str(e)}")
+                except:
+                    pass
 
     async def pause_callback(self, interaction: discord.Interaction):
         global voice_client
@@ -186,27 +229,38 @@ class RadioView(discord.ui.View):
     async def stop_callback(self, interaction: discord.Interaction):
         global voice_client, current_radio
         
-        if voice_client and voice_client.is_connected():
-            voice_client.stop()
-            await voice_client.disconnect()
-            current_radio = None
-            self.is_paused = False
-            
-            # Reset pause button label
-            for child in self.children:
-                if child.custom_id == "radio_pause":
-                    child.label = "⏸️ Пауза"
-            
-            embed = discord.Embed(
-                title="🎵 Радио Плеер",
-                description="**Статус:** Остановлено",
-                color=discord.Color.red()
-            )
-            embed.set_image(url="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExcWlmbzR1M21zNTh1N3UydXQ2bjBveHIzanQ3MThtbGoxeG8ydmwxZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/9zExs2Q2h1EHfE4P6G/giphy.gif")
-            
-            await interaction.response.edit_message(embed=embed, view=self)
-        else:
-            await interaction.response.send_message("Радио уже остановлено!", ephemeral=True)
+        try:
+            if voice_client and voice_client.is_connected():
+                voice_client.stop()
+                await voice_client.disconnect()
+                current_radio = None
+                self.is_paused = False
+                
+                for child in self.children:
+                    if child.custom_id == "radio_pause":
+                        child.label = "⏸️ Пауза"
+                
+                embed = discord.Embed(
+                    title="🎵 Радио Плеер",
+                    description="**Статус:** Остановлено",
+                    color=discord.Color.red()
+                )
+                embed.set_image(url="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExcWlmbzR1M21zNTh1N3UydXQ2bjBveHIzanQ3MThtbGoxeG8ydmwxZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/9zExs2Q2h1EHfE4P6G/giphy.gif")
+                
+                try:
+                    await interaction.response.edit_message(embed=embed, view=self)
+                except discord.NotFound:
+                    await interaction.channel.send(embed=embed, view=self)
+            else:
+                await interaction.response.send_message("Радио уже остановлено!", ephemeral=True)
+        except Exception as e:
+            try:
+                await interaction.response.send_message(f"Ошибка: {str(e)}", ephemeral=True)
+            except discord.NotFound:
+                try:
+                    await interaction.channel.send(f"Ошибка: {str(e)}")
+                except:
+                    pass
 
     async def volume_up_callback(self, interaction: discord.Interaction):
         global voice_client
@@ -294,7 +348,7 @@ class ShizaButton(discord.ui.Button):
 
         # Create embed message
         embed = discord.Embed(
-            title="🎮 Шиза Плеер",
+            title="🎪 Шиза Плеер",
             description=f"**Сейчас играет:** {self.label}\n**Статус:** Играет",
             color=discord.Color.purple()
         )
@@ -320,7 +374,7 @@ class StopShizaButton(discord.ui.Button):
             
             # Create embed message for stopped state
             embed = discord.Embed(
-                title="🎮 Шиза Плеер",
+                title="🎪 Шиза Плеер",
                 description="**Статус:** Остановлено",
                 color=discord.Color.red()
             )
@@ -357,7 +411,7 @@ async def play_shiza_loop(voice_client, file_path):
 @bot.slash_command(name="shiza", description="Включить зацикленное воспроизведение песен")
 async def shiza(ctx):
     embed = discord.Embed(
-        title="🎮 Шиза Плеер",
+        title="🎪 Шиза Плеер",
         description="**Выберите трек:**",
         color=discord.Color.purple()
     )
@@ -368,7 +422,7 @@ async def shiza(ctx):
 @bot.slash_command(name="gpt", description="Сгенерировать текст с помощью GPT.")
 async def gpt(ctx, *, prompt: str):
     client = Client()
-    models = ["gpt-4o"]  # Список моделей для перебора
+    models = ["gpt-4o-mini"]  # Список моделей для перебора
     await ctx.respond("Обработка запроса...")  # Уведомляем пользователя о начале обработки
 
     loop = asyncio.get_event_loop()  # Получаем текущий цикл событий
@@ -442,6 +496,103 @@ async def clearall(ctx):
 
     deleted = await ctx.channel.purge(limit=None)  # Удаляем все сообщения
     await ctx.respond(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
+
+@bot.slash_command(name="restart", description="Перезапустить бота (только для администратора)")
+async def restart(ctx):
+    if ctx.author.id != ADMIN_USER_ID:
+        await ctx.respond("У вас нет прав на выполнение этой команды.", ephemeral=True)
+        return
+
+    await ctx.respond("Перезапуск бота...", ephemeral=True)
+    
+    try:
+        # Отключаемся от всех голосовых каналов перед перезапуском
+        for vc in bot.voice_clients:
+            await vc.disconnect()
+        
+        # Останавливаем задачи
+        clear_channel_daily.stop()
+        
+        # Перезапускаем бота
+        python = sys.executable
+        os.execl(python, python, *sys.argv)
+        
+    except Exception as e:
+        await ctx.respond(f"Ошибка при перезапуске: {str(e)}", ephemeral=True)
+
+@bot.slash_command(name="spam", description="Удалить сообщения с упоминаниями.")
+async def spam(ctx, count: int = None):
+    try:
+        # Сразу отвечаем на взаимодействие
+        await ctx.respond("Удаление сообщений...", ephemeral=True)
+
+        def is_mention(message):
+            # Проверяем наличие упоминаний пользователей, ролей или everyone/here
+            has_mentions = len(message.mentions) > 0 or len(message.role_mentions) > 0
+            has_everyone = message.mention_everyone
+            return has_mentions or has_everyone
+
+        if count is None:
+            # Удаляем все сообщения с упоминаниями
+            deleted = await ctx.channel.purge(limit=1000, check=is_mention)
+            try:
+                await ctx.edit(content=f"Удалено {len(deleted)} сообщений с упоминаниями.")
+            except:
+                pass
+            return
+
+        if count < 1:
+            try:
+                await ctx.edit(content="Количество должно быть больше 0.")
+            except:
+                pass
+            return
+
+        # Удаляем указанное количество сообщений с упоминаниями
+        deleted_count = 0
+        batch_size = 100  # Размер пакета сообщений для проверки за раз
+        
+        while deleted_count < count:
+            # Получаем следующую партию сообщений
+            messages_to_delete = []
+            async for message in ctx.channel.history(limit=batch_size):
+                if is_mention(message):
+                    messages_to_delete.append(message)
+                    deleted_count += 1
+                    if deleted_count >= count:
+                        break
+            
+            if not messages_to_delete:
+                # Если больше нет сообщений с упоминаниями
+                try:
+                    await ctx.edit(content=f"Найдено только {deleted_count} сообщений с упоминаниями.")
+                except:
+                    pass
+                break
+                
+            # Удаляем найденные сообщения
+            if len(messages_to_delete) > 1:
+                await ctx.channel.delete_messages(messages_to_delete)
+            elif messages_to_delete:
+                await messages_to_delete[0].delete()
+
+        # Отправляем финальное сообщение только если удалили все запрошенные сообщения
+        if deleted_count == count:
+            try:
+                await ctx.edit(content=f"Удалено {deleted_count} сообщений с упоминаниями.")
+            except:
+                pass
+
+    except discord.Forbidden:
+        try:
+            await ctx.edit(content="У меня нет прав на удаление сообщений.")
+        except:
+            pass
+    except Exception as e:
+        try:
+            await ctx.edit(content=f"Произошла ошибка: {str(e)}")
+        except:
+            pass
 
 # Запуск бота
 bot.run('')
