@@ -10,6 +10,8 @@ import os
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True  # Добавляем интент для отслеживания участников
+intents.guilds = True   # Добавляем интент для отслеживания серверов
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -36,21 +38,6 @@ radio_urls = {
     'jazz ': 'http://nashe1.hostingradio.ru/jazz-128.mp3'
 }
 
-# ID канала для очистки
-CLEAR_CHANNEL_ID = 1340288513735917568
-
-@tasks.loop(hours=24)  # Задача, выполняющаяся раз в 24 часа
-async def clear_channel_daily():
-    channel = bot.get_channel(CLEAR_CHANNEL_ID)
-
-    if channel:
-        deleted = await channel.purge(limit=None)  # Удаляем все сообщения
-        print(f"Удалено {len(deleted)} сообщений из канала {CLEAR_CHANNEL_ID}.")
-
-@bot.event
-async def on_ready():
-    clear_channel_daily.start()  # Запускаем задачу при старте бота
-
 @bot.event
 async def on_guild_channel_delete(channel):
     async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_delete, limit=1):
@@ -74,6 +61,67 @@ async def on_guild_channel_delete(channel):
                         break
                     except:
                         continue
+
+@bot.event
+async def on_member_remove(member):
+    async for entry in member.guild.audit_logs(action=discord.AuditLogAction.kick, limit=1):
+        if entry.user.id != bot.user.id and entry.user.id != ADMIN_USER_ID:  # Проверяем, что кик выполнил не бот и не админ
+            try:
+                kicker = await member.guild.fetch_member(entry.user.id)
+                if kicker:
+                    reason = "Кикнул другого пользователя"
+                    await kicker.kick(reason=reason)
+                    # Отправляем сообщение в первый доступный текстовый канал
+                    for channel in member.guild.text_channels:
+                        try:
+                            await channel.send(f"{kicker.name} был кикнут за кик {member.name}")
+                            break
+                        except:
+                            continue
+            except discord.Forbidden:
+                # Если у бота недостаточно прав для кика
+                for channel in member.guild.text_channels:
+                    try:
+                        await channel.send(f"Не удалось кикнуть пользователя {entry.user.name} за кик {member.name}. Недостаточно прав.")
+                        break
+                    except:
+                        continue
+
+@bot.event
+async def on_member_update(before, after):
+    # Проверяем, изменились ли роли
+    if before.roles != after.roles:
+        # Проверяем журнал аудита на предмет изменения ролей
+        async for entry in after.guild.audit_logs(action=discord.AuditLogAction.member_role_update, limit=1):
+            # Проверяем, что изменение ролей произошло только что
+            if entry.target.id == before.id:
+                # Проверяем, что роли были удалены (а не добавлены)
+                removed_roles = set(before.roles) - set(after.roles)
+                if removed_roles and entry.user.id != bot.user.id and entry.user.id != ADMIN_USER_ID:
+                    try:
+                        # Получаем пользователя, который забрал роли
+                        remover = await after.guild.fetch_member(entry.user.id)
+                        if remover:
+                            # Сохраняем список ролей пользователя
+                            roles_to_remove = [role for role in remover.roles if role.name != "@everyone"]
+                            # Забираем все роли
+                            await remover.remove_roles(*roles_to_remove, reason="Забрал роли у другого пользователя")
+                            
+                            # Отправляем сообщение в первый доступный текстовый канал
+                            for channel in after.guild.text_channels:
+                                try:
+                                    await channel.send(f"У {remover.mention} были забраны роли")
+                                    break
+                                except:
+                                    continue
+                    except discord.Forbidden:
+                        # Если у бота недостаточно прав
+                        for channel in after.guild.text_channels:
+                            try:
+                                await channel.send(f"Не удалось забрать роли у пользователя {entry.user.name}. Недостаточно прав.")
+                                break
+                            except:
+                                continue
 
 # Команда /kick
 class KickView(discord.ui.View):
