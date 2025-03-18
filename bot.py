@@ -38,6 +38,133 @@ radio_urls = {
     'jazz ': 'http://nashe1.hostingradio.ru/jazz-128.mp3'
 }
 
+# Словарь для хранения количества исключений для каждого пользователя
+kick_limits = {}
+
+# Функция для сброса лимитов каждый день
+@tasks.loop(hours=24)
+async def reset_kick_limits():
+    kick_limits.clear()
+
+class PenizView(discord.ui.View):
+    def __init__(self, members):
+        super().__init__()
+        self.add_member_buttons(members)
+
+    def add_member_buttons(self, members):
+        for member in members:
+            if not member.bot:  # Не добавляем кнопки для ботов
+                # Кнопка для отключения от голосового канала
+                kick_button = discord.ui.Button(
+                    label=f"Отключить {member.name}",
+                    style=discord.ButtonStyle.danger,
+                    custom_id=f"kick_{member.id}"
+                )
+                kick_button.callback = self.kick_callback
+                self.add_item(kick_button)
+                
+                # Кнопка для отключения микрофона
+                mute_button = discord.ui.Button(
+                    label=f"🔇 {member.name}",
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"mute_{member.id}"
+                )
+                mute_button.callback = self.mute_callback
+                self.add_item(mute_button)
+
+    async def kick_callback(self, interaction: discord.Interaction):
+        # Проверяем лимит пользователя
+        user_id = interaction.user.id
+        if user_id not in kick_limits:
+            kick_limits[user_id] = 0
+        
+        if kick_limits[user_id] >= 10:
+            await interaction.response.send_message("Вы достигли лимита исключений на сегодня (10).", ephemeral=True)
+            return
+
+        # Получаем ID целевого пользователя из custom_id кнопки
+        target_id = int(interaction.custom_id.split('_')[1])
+        target_member = interaction.guild.get_member(target_id)
+
+        if not target_member or not target_member.voice:
+            await interaction.response.send_message("Пользователь не находится в голосовом канале.", ephemeral=True)
+            return
+
+        # Отключаем пользователя и увеличиваем счетчик
+        await target_member.move_to(None)
+        kick_limits[user_id] += 1
+        
+        remaining = 10 - kick_limits[user_id]
+        message = await interaction.response.send_message(
+            f"Пользователь {target_member.name} был отключен.\nОсталось исключений на сегодня: {remaining}",
+            ephemeral=True,
+            delete_after=2.0  # Сообщение будет удалено через 3 секунды
+        )
+
+    async def mute_callback(self, interaction: discord.Interaction):
+        # Проверяем лимит пользователя
+        user_id = interaction.user.id
+        if user_id not in kick_limits:
+            kick_limits[user_id] = 0
+        
+        if kick_limits[user_id] >= 10:
+            await interaction.response.send_message("Вы достигли лимита действий на сегодня (10).", ephemeral=True)
+            return
+
+        # Получаем ID целевого пользователя из custom_id кнопки
+        target_id = int(interaction.custom_id.split('_')[1])
+        target_member = interaction.guild.get_member(target_id)
+
+        if not target_member or not target_member.voice:
+            await interaction.response.send_message("Пользователь не находится в голосовом канале.", ephemeral=True)
+            return
+
+        # Переключаем состояние микрофона
+        try:
+            if target_member.voice.self_mute:
+                await target_member.edit(mute=False)
+                status = "включен"
+            else:
+                await target_member.edit(mute=True)
+                status = "отключен"
+
+            # Увеличиваем счетчик использований
+            kick_limits[user_id] += 1
+            remaining = 10 - kick_limits[user_id]
+
+            await interaction.response.send_message(
+                f"Микрофон пользователя {target_member.name} был {status}.\nОсталось действий на сегодня: {remaining}",
+                ephemeral=True,
+                delete_after=2.0  # Сообщение будет удалено через 2 секунды
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message("У меня нет прав для управления микрофоном пользователя.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Произошла ошибка: {str(e)}", ephemeral=True)
+
+@bot.slash_command(name="peniz", description="Показать список участников в голосовом канале для управления")
+async def peniz(ctx):
+    # Получаем список всех участников в голосовых каналах
+    voice_members = []
+    for channel in ctx.guild.voice_channels:
+        voice_members.extend(channel.members)
+    
+    # Удаляем дубликаты
+    voice_members = list(dict.fromkeys(voice_members))
+    
+    if not voice_members:
+        await ctx.respond("В голосовых каналах никого нет.", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="🎯 Управление участниками",
+        description="Выберите действие для каждого участника:\n🔴 - Отключить от голосового канала\n🔇 - Отключить/включить микрофон\n\nЛимит: 10 отключений в день",
+        color=discord.Color.red()
+    )
+    
+    view = PenizView(voice_members)
+    await ctx.respond(embed=embed, view=view, ephemeral=True)
+
 @bot.event
 async def on_guild_channel_delete(channel):
     async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_delete, limit=1):
@@ -241,7 +368,7 @@ class RadioView(discord.ui.View):
         if not voice_client or not voice_client.is_connected():
             await interaction.response.send_message("Радио не играет!", ephemeral=True)
             return
-
+            
         try:
             if voice_client.is_playing():
                 voice_client.pause()
@@ -641,6 +768,11 @@ async def spam(ctx, count: int = None):
             await ctx.edit(content=f"Произошла ошибка: {str(e)}")
         except:
             pass
+
+# Добавляем запуск задачи сброса лимитов при запуске бота
+@bot.event
+async def on_ready():
+    reset_kick_limits.start()
 
 # Запуск бота
 bot.run('')
