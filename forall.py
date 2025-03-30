@@ -7,17 +7,11 @@ import datetime
 from g4f.client import Client
 import sys
 import os
-import aiohttp
-from typing import List, Dict
-import re
-
-# Токен бота
-TOKEN = ''
 
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True  # Добавляем интент для отслеживания участников
-intents.guilds = True   # Добавляем интент для отслеживания серверов
+intents.members = True
+intents.guilds = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -30,14 +24,13 @@ server_radio_messages = {}
 # Переменные для управления воспроизведением звука и радио
 is_playing_shiza = False
 voice_client = None
-current_radio = None  # Добавляем переменную для хранения текущей радиостанции
-# Добавьте переменную для хранения сообщения
+current_radio = None
 radio_message = None
 
 #Переменные
-ADMIN_USER_ID = 480402325786329091  # Замените 123456789 на ваш ID
-VOICE_CHANNEL_ID = 1334607111694450708  # ID голосового канала для проверки
-TEXT_CHANNEL_ID = 1334606129015296010   # ID текстового канала для отправки сообщений
+ADMIN_USER_ID = 480402325786329091
+VOICE_CHANNEL_ID = 1334607111694450708
+TEXT_CHANNEL_ID = 1334606129015296010
 
 # Команда /radio
 radio_urls = {
@@ -70,32 +63,29 @@ async def reset_kick_limits():
 
 class PenizView(discord.ui.View):
     def __init__(self, members):
-        super().__init__()
+        super().__init__(timeout=None)
         self.add_member_buttons(members)
 
     def add_member_buttons(self, members):
         for member in members:
-            if not member.bot:  # Не добавляем кнопки для ботов
-                # Кнопка для отключения от голосового канала
+            if not member.bot:
                 kick_button = discord.ui.Button(
                     label=f"Отключить {member.name}",
                     style=discord.ButtonStyle.danger,
                     custom_id=f"kick_{member.id}"
                 )
-                kick_button.callback = self.kick_callback
+                kick_button.callback = lambda i, m=member: self.kick_callback(i, m)
                 self.add_item(kick_button)
                 
-                # Кнопка для отключения микрофона
                 mute_button = discord.ui.Button(
                     label=f"🔇 {member.name}",
                     style=discord.ButtonStyle.secondary,
                     custom_id=f"mute_{member.id}"
                 )
-                mute_button.callback = self.mute_callback
+                mute_button.callback = lambda i, m=member: self.mute_callback(i, m)
                 self.add_item(mute_button)
 
-    async def kick_callback(self, interaction: discord.Interaction):
-        # Проверяем лимит пользователя
+    async def kick_callback(self, interaction: discord.Interaction, member: discord.Member):
         user_id = interaction.user.id
         if user_id not in server_kick_limits[interaction.guild.id]:
             server_kick_limits[interaction.guild.id][user_id] = 0
@@ -104,27 +94,21 @@ class PenizView(discord.ui.View):
             await interaction.response.send_message("Вы достигли лимита исключений на сегодня (10).", ephemeral=True)
             return
 
-        # Получаем ID целевого пользователя из custom_id кнопки
-        target_id = int(interaction.custom_id.split('_')[1])
-        target_member = interaction.guild.get_member(target_id)
-
-        if not target_member or not target_member.voice:
+        if not member or not member.voice:
             await interaction.response.send_message("Пользователь не находится в голосовом канале.", ephemeral=True)
             return
 
-        # Отключаем пользователя и увеличиваем счетчик
-        await target_member.move_to(None)
+        await member.move_to(None)
         server_kick_limits[interaction.guild.id][user_id] += 1
         
         remaining = 10 - server_kick_limits[interaction.guild.id][user_id]
-        message = await interaction.response.send_message(
-            f"Пользователь {target_member.name} был отключен.\nОсталось исключений на сегодня: {remaining}",
+        await interaction.response.send_message(
+            f"Пользователь {member.name} был отключен.\nОсталось исключений на сегодня: {remaining}",
             ephemeral=True,
-            delete_after=2.0  # Сообщение будет удалено через 3 секунды
+            delete_after=2.0
         )
 
-    async def mute_callback(self, interaction: discord.Interaction):
-        # Проверяем лимит пользователя
+    async def mute_callback(self, interaction: discord.Interaction, member: discord.Member):
         user_id = interaction.user.id
         if user_id not in server_kick_limits[interaction.guild.id]:
             server_kick_limits[interaction.guild.id][user_id] = 0
@@ -133,47 +117,41 @@ class PenizView(discord.ui.View):
             await interaction.response.send_message("Вы достигли лимита действий на сегодня (10).", ephemeral=True)
             return
 
-        # Получаем ID целевого пользователя из custom_id кнопки
-        target_id = int(interaction.custom_id.split('_')[1])
-        target_member = interaction.guild.get_member(target_id)
-
-        if not target_member or not target_member.voice:
+        if not member or not member.voice:
             await interaction.response.send_message("Пользователь не находится в голосовом канале.", ephemeral=True)
             return
 
-        # Переключаем состояние микрофона
         try:
-            if target_member.voice.self_mute:
-                await target_member.edit(mute=False)
+            if member.voice.self_mute:
+                await member.edit(mute=False)
                 status = "включен"
             else:
-                await target_member.edit(mute=True)
+                await member.edit(mute=True)
                 status = "отключен"
 
-            # Увеличиваем счетчик использований
             server_kick_limits[interaction.guild.id][user_id] += 1
             remaining = 10 - server_kick_limits[interaction.guild.id][user_id]
 
             await interaction.response.send_message(
-                f"Микрофон пользователя {target_member.name} был {status}.\nОсталось действий на сегодня: {remaining}",
+                f"Микрофон пользователя {member.name} был {status}.\nОсталось действий на сегодня: {remaining}",
                 ephemeral=True,
-                delete_after=2.0  # Сообщение будет удалено через 2 секунды
+                delete_after=2.0
             )
         except discord.Forbidden:
             await interaction.response.send_message("У меня нет прав для управления микрофоном пользователя.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Произошла ошибка: {str(e)}", ephemeral=True)
 
-@bot.slash_command(name="peniz", description="Показать список участников в голосовом канале для управления")
-async def peniz(ctx):
+@bot.tree.command(name="peniz", description="Показать список участников в голосовом канале для управления")
+async def peniz(interaction: discord.Interaction):
     voice_members = []
-    for channel in ctx.guild.voice_channels:
+    for channel in interaction.guild.voice_channels:
         voice_members.extend(channel.members)
     
     voice_members = list(dict.fromkeys(voice_members))
     
     if not voice_members:
-        await ctx.respond("В голосовых каналах никого нет.", ephemeral=True)
+        await interaction.response.send_message("В голосовых каналах никого нет.", ephemeral=True)
         return
 
     embed = discord.Embed(
@@ -183,17 +161,16 @@ async def peniz(ctx):
     )
     
     view = PenizView(voice_members)
-    await ctx.respond(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.event
 async def on_guild_channel_delete(channel):
     async for entry in channel.guild.audit_logs(action=discord.AuditLogAction.channel_delete, limit=1):
-        if entry.user.id != bot.user.id and entry.user.id != ADMIN_USER_ID:  # Проверяем, что канал удалил не бот и не админ
+        if entry.user.id != bot.user.id and entry.user.id != ADMIN_USER_ID:
             try:
                 member = await channel.guild.fetch_member(entry.user.id)
                 if member:
                     await member.kick(reason="ДАУН")
-                    # Отправляем сообщение в первый доступный текстовый канал
                     for ch in channel.guild.text_channels:
                         try:
                             await ch.send(f"Пользователь {entry.user.name} был трахнут за удаление канала {channel.name}")
@@ -201,7 +178,6 @@ async def on_guild_channel_delete(channel):
                         except:
                             continue
             except discord.Forbidden:
-                # Если у бота недостаточно прав для кика
                 for ch in channel.guild.text_channels:
                     try:
                         await ch.send(f"Не удалось кикнуть пользователя {entry.user.name} за удаление канала. Недостаточно прав.")
@@ -212,13 +188,12 @@ async def on_guild_channel_delete(channel):
 @bot.event
 async def on_member_remove(member):
     async for entry in member.guild.audit_logs(action=discord.AuditLogAction.kick, limit=1):
-        if entry.user.id != bot.user.id and entry.user.id != ADMIN_USER_ID:  # Проверяем, что кик выполнил не бот и не админ
+        if entry.user.id != bot.user.id and entry.user.id != ADMIN_USER_ID:
             try:
                 kicker = await member.guild.fetch_member(entry.user.id)
                 if kicker:
                     reason = "Кикнул другого пользователя"
                     await kicker.kick(reason=reason)
-                    # Отправляем сообщение в первый доступный текстовый канал
                     for channel in member.guild.text_channels:
                         try:
                             await channel.send(f"{kicker.name} был кикнут за кик {member.name}")
@@ -226,7 +201,6 @@ async def on_member_remove(member):
                         except:
                             continue
             except discord.Forbidden:
-                # Если у бота недостаточно прав для кика
                 for channel in member.guild.text_channels:
                     try:
                         await channel.send(f"Не удалось кикнуть пользователя {entry.user.name} за кик {member.name}. Недостаточно прав.")
@@ -236,25 +210,17 @@ async def on_member_remove(member):
 
 @bot.event
 async def on_member_update(before, after):
-    # Проверяем, изменились ли роли
     if before.roles != after.roles:
-        # Проверяем журнал аудита на предмет изменения ролей
         async for entry in after.guild.audit_logs(action=discord.AuditLogAction.member_role_update, limit=1):
-            # Проверяем, что изменение ролей произошло только что
             if entry.target.id == before.id:
-                # Проверяем, что роли были удалены (а не добавлены)
                 removed_roles = set(before.roles) - set(after.roles)
                 if removed_roles and entry.user.id != bot.user.id and entry.user.id != ADMIN_USER_ID:
                     try:
-                        # Получаем пользователя, который забрал роли
                         remover = await after.guild.fetch_member(entry.user.id)
                         if remover:
-                            # Сохраняем список ролей пользователя
                             roles_to_remove = [role for role in remover.roles if role.name != "@everyone"]
-                            # Забираем все роли
                             await remover.remove_roles(*roles_to_remove, reason="Забрал роли у другого пользователя")
                             
-                            # Отправляем сообщение в первый доступный текстовый канал
                             for channel in after.guild.text_channels:
                                 try:
                                     await channel.send(f"У {remover.mention} были забраны роли")
@@ -262,7 +228,6 @@ async def on_member_update(before, after):
                                 except:
                                     continue
                     except discord.Forbidden:
-                        # Если у бота недостаточно прав
                         for channel in after.guild.text_channels:
                             try:
                                 await channel.send(f"Не удалось забрать роли у пользователя {entry.user.name}. Недостаточно прав.")
@@ -270,10 +235,16 @@ async def on_member_update(before, after):
                             except:
                                 continue
 
-# Команда /kick
 class KickView(discord.ui.View):
-    @discord.ui.button(label="Случайное исключение", style=discord.ButtonStyle.danger)
-    async def random_kick(self, button: discord.ui.Button, interaction: discord.Interaction):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(KickButton())
+
+class KickButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Случайное исключение", style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: discord.Interaction):
         if not interaction.user.voice:
             await interaction.response.send_message("Вы должны находиться в голосовом канале.", ephemeral=True)
             return
@@ -281,7 +252,6 @@ class KickView(discord.ui.View):
         channel = interaction.user.voice.channel
         members = [member for member in channel.members if not member.bot]
 
-        # Проверяем, что в канале только 1 участник (включая того, кто нажимает кнопку)
         if len(members) > 1:
             member_to_kick = random.choice(members)
             await member_to_kick.move_to(None)
@@ -289,10 +259,10 @@ class KickView(discord.ui.View):
         else:
             await interaction.response.send_message("В голосовом канале должно быть минимум 2 участника для исключения.", ephemeral=True)
 
-@bot.slash_command(name="kick", description="Исключить случайного участника из голосового канала.")
-async def kick(ctx):
+@bot.tree.command(name="kick", description="Исключить случайного участника из голосового канала.")
+async def kick(interaction: discord.Interaction):
     view = KickView()
-    await ctx.respond("Нажмите, чтобы исключить случайного участника:", view=view)
+    await interaction.response.send_message("Нажмите, чтобы исключить случайного участника:", view=view)
 
 class RadioView(discord.ui.View):
     def __init__(self, radio_urls, guild_id):
@@ -306,7 +276,7 @@ class RadioView(discord.ui.View):
     def add_radio_buttons(self):
         for name in self.radio_urls:
             button = discord.ui.Button(label=name.title(), style=ButtonStyle.primary, custom_id=f"radio_{name}")
-            button.callback = self.radio_button_callback
+            button.callback = lambda i, n=name: self.radio_button_callback(i, n)
             self.add_item(button)
 
     def add_control_buttons(self):
@@ -326,9 +296,8 @@ class RadioView(discord.ui.View):
         volume_up.callback = self.volume_up_callback
         self.add_item(volume_up)
 
-    async def radio_button_callback(self, interaction: discord.Interaction):
+    async def radio_button_callback(self, interaction: discord.Interaction, station: str):
         try:
-            station = interaction.custom_id.replace("radio_", "")
             url = self.radio_urls[station]
 
             if not interaction.user.voice:
@@ -491,20 +460,20 @@ class RadioView(discord.ui.View):
         else:
             await interaction.response.send_message("Сначала включите радио!", ephemeral=True)
 
-@bot.slash_command(name="radio", description="Включить радио")
-async def radio(ctx):
+@bot.tree.command(name="radio", description="Включить радио")
+async def radio(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🎵 Радио Плеер",
         description="**Выберите радиостанцию:**",
         color=discord.Color.blue()
     )
     embed.set_image(url="https://media3.giphy.com/media/v1.Y2lkPTc5MGI3NjExcWlmbzR1M21zNTh1N3UydXQ2bjBveHIzanQ3MThtbGoxeG8ydmwxZCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/9zExs2Q2h1EHfE4P6G/giphy.gif")
-    view = RadioView(radio_urls, ctx.guild.id)
-    await ctx.respond(embed=embed, view=view)
+    view = RadioView(radio_urls, interaction.guild.id)
+    await interaction.response.send_message(embed=embed, view=view)
 
 class ShizaView(discord.ui.View):
     def __init__(self, guild_id):
-        super().__init__()
+        super().__init__(timeout=None)
         self.guild_id = guild_id
         init_server_state(guild_id)
         self.add_item(ShizaButton("🎵 Литвин", "/home/bot/litvin.mp3", guild_id))
@@ -594,28 +563,27 @@ async def play_shiza_loop(voice_client, file_path, guild_id):
             print(f"Ошибка воспроизведения: {e}")
             break
 
-@bot.slash_command(name="shiza", description="Включить зацикленное воспроизведение песен")
-async def shiza(ctx):
+@bot.tree.command(name="shiza", description="Включить зацикленное воспроизведение песен")
+async def shiza(interaction: discord.Interaction):
     embed = discord.Embed(
         title="🎪 Шиза Плеер",
         description="**Выберите трек:**",
         color=discord.Color.purple()
     )
     embed.set_image(url="https://i.pinimg.com/originals/c5/52/8e/c5528e6c4bb0a0ed0b7a3fcf127c68a2.gif")
-    view = ShizaView(ctx.guild.id)
-    await ctx.respond(embed=embed, view=view)
+    view = ShizaView(interaction.guild.id)
+    await interaction.response.send_message(embed=embed, view=view)
 
-@bot.slash_command(name="gpt", description="Сгенерировать текст с помощью GPT.")
-async def gpt(ctx, *, prompt: str):
+@bot.tree.command(name="gpt", description="Сгенерировать текст с помощью GPT.")
+async def gpt(interaction: discord.Interaction, prompt: str):
     client = Client()
-    models = ["gpt-4o-mini"]  # Список моделей для перебора
-    await ctx.respond("Обработка запроса...")  # Уведомляем пользователя о начале обработки
+    models = ["gpt-4o"]
+    await interaction.response.defer()
 
-    loop = asyncio.get_event_loop()  # Получаем текущий цикл событий
+    loop = asyncio.get_event_loop()
 
     for model in models:
         try:
-            # Обертка для вызова функции с аргументами
             def create_completion():
                 return client.chat.completions.create(
                     model=model,
@@ -623,26 +591,23 @@ async def gpt(ctx, *, prompt: str):
                     web_search=False
                 )
 
-            # Используем run_in_executor для выполнения синхронного метода в отдельном потоке
             response = await loop.run_in_executor(None, create_completion)
             
-            # Проверяем структуру ответа и получаем содержимое
             if hasattr(response.choices[0], 'message'):
                 content = response.choices[0].message.content
             else:
                 content = response.choices[0].content
                 
-            await ctx.followup.send(content)
-            return  # Выход из функции, если запрос успешен
+            await interaction.followup.send(content)
+            return
         except Exception as e:
-            print(f"Ошибка при использовании модели {model}: {e}")  # Отладочное сообщение
+            print(f"Ошибка при использовании модели {model}: {e}")
 
-    # Если все модели не сработали, отправляем сообщение об ошибке
-    await ctx.followup.send("Извините, произошла ошибка при обработке запроса. Попробуйте позже.")
+    await interaction.followup.send("Извините, произошла ошибка при обработке запроса. Попробуйте позже.")
 
-@bot.slash_command(name="image", description="Генерация изображения по запросу")
-async def image(ctx, *, prompt: str):
-    await ctx.defer()  # Defer the response since image generation might take time
+@bot.tree.command(name="image", description="Генерация изображения по запросу")
+async def image(interaction: discord.Interaction, prompt: str):
+    await interaction.response.defer()
     
     try:
         client = Client()
@@ -655,44 +620,42 @@ async def image(ctx, *, prompt: str):
         if response and hasattr(response, 'data') and len(response.data) > 0:
             image_url = response.data[0].url
             
-            # Create embed with the image
             embed = discord.Embed(title="Сгенерированное изображение", description=f"Запрос: {prompt}")
             embed.set_image(url=image_url)
             
-            await ctx.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed)
         else:
-            await ctx.followup.send("Не удалось сгенерировать изображение. Попробуйте другой запрос.")
+            await interaction.followup.send("Не удалось сгенерировать изображение. Попробуйте другой запрос.")
             
     except Exception as e:
-        await ctx.followup.send(f"Произошла ошибка при генерации изображения: {str(e)}")
+        await interaction.followup.send(f"Произошла ошибка при генерации изображения: {str(e)}")
 
-@bot.slash_command(name="clear", description="Очистить чат от сообщений бота и команд.")
-async def clear(ctx):
+@bot.tree.command(name="clear", description="Очистить чат от сообщений бота и команд.")
+async def clear(interaction: discord.Interaction):
     def is_bot_or_command_message(message):
         return message.author == bot.user or message.content.startswith('/')
 
-    deleted = await ctx.channel.purge(limit=100, check=is_bot_or_command_message)
-    await ctx.respond(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
+    deleted = await interaction.channel.purge(limit=100, check=is_bot_or_command_message)
+    await interaction.response.send_message(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
 
-@bot.slash_command(name="clearall", description="Очистить чат от всех сообщений.")
-async def clearall(ctx):
-    if ctx.author.id != ADMIN_USER_ID:  # Проверка на права
-        await ctx.respond("У вас нет прав на выполнение этой команды.", ephemeral=True)
+@bot.tree.command(name="clearall", description="Очистить чат от всех сообщений.")
+async def clearall(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_USER_ID:
+        await interaction.response.send_message("У вас нет прав на выполнение этой команды.", ephemeral=True)
         return
 
-    deleted = await ctx.channel.purge(limit=None)  # Удаляем все сообщения
-    await ctx.respond(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
+    deleted = await interaction.channel.purge(limit=None)
+    await interaction.response.send_message(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
 
-@bot.slash_command(name="restart", description="Перезапустить бота (только для администратора)")
-async def restart(ctx):
-    if ctx.author.id != ADMIN_USER_ID:
-        await ctx.respond("У вас нет прав на выполнение этой команды.", ephemeral=True)
+@bot.tree.command(name="restart", description="Перезапустить бота (только для администратора)")
+async def restart(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_USER_ID:
+        await interaction.response.send_message("У вас нет прав на выполнение этой команды.", ephemeral=True)
         return
 
-    await ctx.respond("Перезапуск бота...", ephemeral=True)
+    await interaction.response.send_message("Перезапуск бота...", ephemeral=True)
     
     try:
-        # Отключаемся от всех голосовых каналов перед перезапуском
         for guild_id, voice_client in server_voice_clients.items():
             try:
                 if voice_client and voice_client.is_connected():
@@ -700,58 +663,50 @@ async def restart(ctx):
             except:
                 continue
         
-        # Очищаем все состояния серверов
         server_states.clear()
         server_voice_clients.clear()
         server_kick_limits.clear()
         server_radio_messages.clear()
         
-        # Останавливаем задачи
         reset_kick_limits.stop()
         
-        # Перезапускаем бота
         python = sys.executable
         os.execl(python, python, *sys.argv)
         
     except Exception as e:
-        await ctx.respond(f"Ошибка при перезапуске: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"Ошибка при перезапуске: {str(e)}", ephemeral=True)
 
-@bot.slash_command(name="spam", description="Удалить сообщения с упоминаниями.")
-async def spam(ctx, count: int = None):
+@bot.tree.command(name="spam", description="Удалить сообщения с упоминаниями.")
+async def spam(interaction: discord.Interaction, count: int = None):
     try:
-        # Сразу отвечаем на взаимодействие
-        await ctx.respond("Удаление сообщений...", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
 
         def is_mention(message):
-            # Проверяем наличие упоминаний пользователей, ролей или everyone/here
             has_mentions = len(message.mentions) > 0 or len(message.role_mentions) > 0
             has_everyone = message.mention_everyone
             return has_mentions or has_everyone
 
         if count is None:
-            # Удаляем все сообщения с упоминаниями
-            deleted = await ctx.channel.purge(limit=1000, check=is_mention)
+            deleted = await interaction.channel.purge(limit=1000, check=is_mention)
             try:
-                await ctx.edit(content=f"Удалено {len(deleted)} сообщений с упоминаниями.")
+                await interaction.followup.send(f"Удалено {len(deleted)} сообщений с упоминаниями.")
             except:
                 pass
             return
 
         if count < 1:
             try:
-                await ctx.edit(content="Количество должно быть больше 0.")
+                await interaction.followup.send("Количество должно быть больше 0.")
             except:
                 pass
             return
 
-        # Удаляем указанное количество сообщений с упоминаниями
         deleted_count = 0
-        batch_size = 100  # Размер пакета сообщений для проверки за раз
+        batch_size = 100
         
         while deleted_count < count:
-            # Получаем следующую партию сообщений
             messages_to_delete = []
-            async for message in ctx.channel.history(limit=batch_size):
+            async for message in interaction.channel.history(limit=batch_size):
                 if is_mention(message):
                     messages_to_delete.append(message)
                     deleted_count += 1
@@ -759,56 +714,47 @@ async def spam(ctx, count: int = None):
                         break
             
             if not messages_to_delete:
-                # Если больше нет сообщений с упоминаниями
                 try:
-                    await ctx.edit(content=f"Найдено только {deleted_count} сообщений с упоминаниями.")
+                    await interaction.followup.send(f"Найдено только {deleted_count} сообщений с упоминаниями.")
                 except:
                     pass
                 break
                 
-            # Удаляем найденные сообщения
             if len(messages_to_delete) > 1:
-                await ctx.channel.delete_messages(messages_to_delete)
+                await interaction.channel.delete_messages(messages_to_delete)
             elif messages_to_delete:
                 await messages_to_delete[0].delete()
 
-        # Отправляем финальное сообщение только если удалили все запрошенные сообщения
         if deleted_count == count:
             try:
-                await ctx.edit(content=f"Удалено {deleted_count} сообщений с упоминаниями.")
+                await interaction.followup.send(f"Удалено {deleted_count} сообщений с упоминаниями.")
             except:
                 pass
 
     except discord.Forbidden:
         try:
-            await ctx.edit(content="У меня нет прав на удаление сообщений.")
+            await interaction.followup.send("У меня нет прав на удаление сообщений.")
         except:
             pass
     except Exception as e:
         try:
-            await ctx.edit(content=f"Произошла ошибка: {str(e)}")
+            await interaction.followup.send(f"Произошла ошибка: {str(e)}")
         except:
             pass
 
-@bot.slash_command(name="down", description="Удалить все каналы сервера, кроме защищенных")
-async def down(ctx):
-    # Проверка на права администратора
-    if ctx.author.id != ADMIN_USER_ID:
-        await ctx.respond("У вас нет прав на выполнение этой команды.", ephemeral=True)
+@bot.tree.command(name="down", description="Удалить все каналы сервера, кроме защищенных")
+async def down(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_USER_ID:
+        await interaction.response.send_message("У вас нет прав на выполнение этой команды.", ephemeral=True)
         return
 
-    # Список защищенных каналов
     protected_channels = [1343943218601005167, 1343943252856012843, 1351109433622659092]
-    
-    # Счетчик удаленных каналов
     deleted_count = 0
     
-    # Отправляем начальное сообщение
-    await ctx.respond("Начинаю удаление каналов...", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
     
     try:
-        # Перебираем все каналы сервера
-        for channel in ctx.guild.channels:
+        for channel in interaction.guild.channels:
             if channel.id not in protected_channels:
                 try:
                     await channel.delete()
@@ -818,30 +764,25 @@ async def down(ctx):
                 except discord.HTTPException:
                     continue
         
-        # Отправляем сообщение об успешном удалении
-        await ctx.followup.send(f"Удалено {deleted_count} каналов.", ephemeral=True)
+        await interaction.followup.send(f"Удалено {deleted_count} каналов.")
     except Exception as e:
-        await ctx.followup.send(f"Произошла ошибка при удалении каналов: {str(e)}", ephemeral=True)
+        await interaction.followup.send(f"Произошла ошибка при удалении каналов: {str(e)}")
 
-# Добавляем запуск задачи сброса лимитов при запуске бота
 @bot.event
 async def on_ready():
     print(f'Бот {bot.user} готов к работе!')
     reset_kick_limits.start()
     
-    # Инициализируем состояния для всех серверов, где уже находится бот
     for guild in bot.guilds:
         init_server_state(guild.id)
 
 @bot.event
 async def on_guild_join(guild):
-    # Инициализируем состояние для нового сервера
     init_server_state(guild.id)
     print(f'Бот присоединился к серверу: {guild.name}')
 
 @bot.event
 async def on_guild_remove(guild):
-    # Очищаем состояние сервера при выходе
     server_states.pop(guild.id, None)
     server_voice_clients.pop(guild.id, None)
     server_kick_limits.pop(guild.id, None)
@@ -849,4 +790,4 @@ async def on_guild_remove(guild):
     print(f'Бот покинул сервер: {guild.name}')
 
 # Запуск бота
-bot.run(TOKEN)
+bot.run('')
