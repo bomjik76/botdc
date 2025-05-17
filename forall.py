@@ -18,7 +18,6 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Словари для хранения состояния каждого сервера
 server_states = {}
 server_voice_clients = {}
-server_kick_limits = {}
 server_radio_messages = {}
 
 # Переменные для управления воспроизведением звука и радио
@@ -34,12 +33,13 @@ TEXT_CHANNEL_ID = 1334606129015296010
 
 # Команда /radio
 radio_urls = {
-    'геленджик': 'https://serv39.vintera.tv/radio_gel/radio_stream/icecast.audio',
-    'кавказ': 'http://radio.alania.net:8000/kvk',
+    'ретрогеленджик': 'http://control.craftradio.ru:8000/37_1e7c47df',
+    'кантри': 'https://stream.regenbogen2.de/country/mp3-128/radiobrowser',
     'аниме': 'https://pool.anison.fm:9000/AniSonFM(320)?nocache=0.9834540412142996',
     'чил': 'http://node-33.zeno.fm/0r0xa792kwzuv?rj-ttl=5&rj-tok=AAABfMtdjJ4AtC1pGWo1_ohFMw',
     'lofi': 'http://stream.zeno.fm/f3wvbbqmdg8uv',
-    'кубань': 'http://stream.pervoe.fm:8000',
+    'инди': 'http://server-23.stream-server.nl:8438/;listen.pls_',
+    'панк рок': 'https://s1-webradio.rockantenne.de/punkrock/stream/mp3',
     'jazz ': 'http://nashe1.hostingradio.ru/jazz-128.mp3'
 }
 
@@ -52,116 +52,6 @@ def init_server_state(guild_id):
             'volume': 1.0,
             'is_paused': False
         }
-    if guild_id not in server_kick_limits:
-        server_kick_limits[guild_id] = {}
-
-# Функция для сброса лимитов каждый день
-@tasks.loop(hours=24)
-async def reset_kick_limits():
-    for guild_id in server_kick_limits:
-        server_kick_limits[guild_id].clear()
-
-class PenizView(discord.ui.View):
-    def __init__(self, members):
-        super().__init__(timeout=None)
-        self.add_member_buttons(members)
-
-    def add_member_buttons(self, members):
-        for member in members:
-            if not member.bot:
-                kick_button = discord.ui.Button(
-                    label=f"Отключить {member.name}",
-                    style=discord.ButtonStyle.danger,
-                    custom_id=f"kick_{member.id}"
-                )
-                kick_button.callback = lambda i, m=member: self.kick_callback(i, m)
-                self.add_item(kick_button)
-                
-                mute_button = discord.ui.Button(
-                    label=f"🔇 {member.name}",
-                    style=discord.ButtonStyle.secondary,
-                    custom_id=f"mute_{member.id}"
-                )
-                mute_button.callback = lambda i, m=member: self.mute_callback(i, m)
-                self.add_item(mute_button)
-
-    async def kick_callback(self, interaction: discord.Interaction, member: discord.Member):
-        user_id = interaction.user.id
-        if user_id not in server_kick_limits[interaction.guild.id]:
-            server_kick_limits[interaction.guild.id][user_id] = 0
-        
-        if server_kick_limits[interaction.guild.id][user_id] >= 10:
-            await interaction.response.send_message("Вы достигли лимита исключений на сегодня (10).", ephemeral=True)
-            return
-
-        if not member or not member.voice:
-            await interaction.response.send_message("Пользователь не находится в голосовом канале.", ephemeral=True)
-            return
-
-        await member.move_to(None)
-        server_kick_limits[interaction.guild.id][user_id] += 1
-        
-        remaining = 10 - server_kick_limits[interaction.guild.id][user_id]
-        await interaction.response.send_message(
-            f"Пользователь {member.name} был отключен.\nОсталось исключений на сегодня: {remaining}",
-            ephemeral=True,
-            delete_after=2.0
-        )
-
-    async def mute_callback(self, interaction: discord.Interaction, member: discord.Member):
-        user_id = interaction.user.id
-        if user_id not in server_kick_limits[interaction.guild.id]:
-            server_kick_limits[interaction.guild.id][user_id] = 0
-        
-        if server_kick_limits[interaction.guild.id][user_id] >= 10:
-            await interaction.response.send_message("Вы достигли лимита действий на сегодня (10).", ephemeral=True)
-            return
-
-        if not member or not member.voice:
-            await interaction.response.send_message("Пользователь не находится в голосовом канале.", ephemeral=True)
-            return
-
-        try:
-            if member.voice.self_mute:
-                await member.edit(mute=False)
-                status = "включен"
-            else:
-                await member.edit(mute=True)
-                status = "отключен"
-
-            server_kick_limits[interaction.guild.id][user_id] += 1
-            remaining = 10 - server_kick_limits[interaction.guild.id][user_id]
-
-            await interaction.response.send_message(
-                f"Микрофон пользователя {member.name} был {status}.\nОсталось действий на сегодня: {remaining}",
-                ephemeral=True,
-                delete_after=2.0
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message("У меня нет прав для управления микрофоном пользователя.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"Произошла ошибка: {str(e)}", ephemeral=True)
-
-@bot.tree.command(name="peniz", description="Показать список участников в голосовом канале для управления")
-async def peniz(interaction: discord.Interaction):
-    voice_members = []
-    for channel in interaction.guild.voice_channels:
-        voice_members.extend(channel.members)
-    
-    voice_members = list(dict.fromkeys(voice_members))
-    
-    if not voice_members:
-        await interaction.response.send_message("В голосовых каналах никого нет.", ephemeral=True)
-        return
-
-    embed = discord.Embed(
-        title="🎯 Управление участниками",
-        description="Выберите действие для каждого участника:\n🔴 - Отключить от голосового канала\n🔇 - Отключить микрофон\n\nЛимит: 10 отключений в день",
-        color=discord.Color.red()
-    )
-    
-    view = PenizView(voice_members)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 @bot.event
 async def on_guild_channel_delete(channel):
@@ -235,34 +125,23 @@ async def on_member_update(before, after):
                             except:
                                 continue
 
-class KickView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(KickButton())
-
-class KickButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Случайное исключение", style=discord.ButtonStyle.danger)
-
-    async def callback(self, interaction: discord.Interaction):
-        if not interaction.user.voice:
-            await interaction.response.send_message("Вы должны находиться в голосовом канале.", ephemeral=True)
-            return
-
-        channel = interaction.user.voice.channel
-        members = [member for member in channel.members if not member.bot]
-
-        if len(members) > 1:
-            member_to_kick = random.choice(members)
-            await member_to_kick.move_to(None)
-            await interaction.response.send_message(f"{member_to_kick.name} был исключен из голосового канала.")
-        else:
-            await interaction.response.send_message("В голосовом канале должно быть минимум 2 участника для исключения.", ephemeral=True)
-
-@bot.tree.command(name="kick", description="Исключить случайного участника из голосового канала.")
-async def kick(interaction: discord.Interaction):
-    view = KickView()
-    await interaction.response.send_message("Нажмите, чтобы исключить случайного участника:", view=view)
+@bot.event
+async def on_voice_state_update(member, before, after):
+    # Если бот был отключен от голосового канала
+    if member.id == bot.user.id and before.channel and not after.channel:
+        guild_id = before.channel.guild.id
+        # Очищаем состояние сервера
+        if guild_id in server_states:
+            server_states[guild_id]['is_playing_shiza'] = False
+            server_states[guild_id]['current_radio'] = None
+            server_states[guild_id]['is_paused'] = False
+        
+        # Удаляем voice client
+        if guild_id in server_voice_clients:
+            server_voice_clients.pop(guild_id, None)
+        
+        # Сбрасываем статус бота
+        await update_bot_status(discord.ActivityType.watching, "за сервером")
 
 class RadioView(discord.ui.View):
     def __init__(self, radio_urls, guild_id):
@@ -304,19 +183,49 @@ class RadioView(discord.ui.View):
                 await interaction.response.send_message("Вы должны быть в голосовом канале!", ephemeral=True)
                 return
 
+            # Проверяем, может ли бот подключиться к каналу
+            if not interaction.user.voice.channel.permissions_for(interaction.guild.me).connect:
+                await interaction.response.send_message("У меня нет прав для подключения к голосовому каналу!", ephemeral=True)
+                return
+
+            # Проверяем, может ли бот говорить в канале
+            if not interaction.user.voice.channel.permissions_for(interaction.guild.me).speak:
+                await interaction.response.send_message("У меня нет прав для воспроизведения звука в голосовом канале!", ephemeral=True)
+                return
+
             voice_client = server_voice_clients.get(self.guild_id)
             if voice_client and voice_client.is_connected():
                 if voice_client.channel != interaction.user.voice.channel:
-                    await voice_client.move_to(interaction.user.voice.channel)
-                voice_client.stop()
+                    try:
+                        await voice_client.move_to(interaction.user.voice.channel)
+                    except discord.ClientException:
+                        await interaction.response.send_message("Не удалось переключиться на другой голосовой канал!", ephemeral=True)
+                        return
+                # Корректно останавливаем текущее воспроизведение
+                if voice_client.is_playing():
+                    voice_client.stop()
+                    # Даем время на завершение процесса ffmpeg
+                    await asyncio.sleep(0.5)
             else:
-                voice_client = await interaction.user.voice.channel.connect()
-                server_voice_clients[self.guild_id] = voice_client
+                try:
+                    voice_client = await interaction.user.voice.channel.connect()
+                    server_voice_clients[self.guild_id] = voice_client
+                except discord.ClientException as e:
+                    await interaction.response.send_message(f"Не удалось подключиться к голосовому каналу: {str(e)}", ephemeral=True)
+                    return
 
             server_states[self.guild_id]['current_radio'] = station
             server_states[self.guild_id]['is_paused'] = False
-            audio_source = PCMVolumeTransformer(FFmpegPCMAudio(url), volume=server_states[self.guild_id]['volume'])
-            voice_client.play(audio_source)
+            
+            try:
+                audio_source = PCMVolumeTransformer(FFmpegPCMAudio(url), volume=server_states[self.guild_id]['volume'])
+                voice_client.play(audio_source)
+            except Exception as e:
+                await interaction.response.send_message(f"Ошибка при воспроизведении: {str(e)}", ephemeral=True)
+                return
+
+            # Update bot status
+            await update_bot_status(discord.ActivityType.listening, f"радио {station}")
 
             embed = discord.Embed(
                 title="🎵 Радио Плеер",
@@ -389,11 +298,17 @@ class RadioView(discord.ui.View):
             return
             
         try:
-            voice_client.stop()
+            if voice_client.is_playing():
+                voice_client.stop()
+                # Даем время на завершение процесса ffmpeg
+                await asyncio.sleep(0.5)
             await voice_client.disconnect()
             server_voice_clients.pop(self.guild_id, None)
             server_states[self.guild_id]['current_radio'] = None
             server_states[self.guild_id]['is_paused'] = False
+            
+            # Reset bot status
+            await update_bot_status(discord.ActivityType.watching, "за сервером")
             
             for child in self.children:
                 if child.custom_id == "radio_pause":
@@ -478,6 +393,8 @@ class ShizaView(discord.ui.View):
         init_server_state(guild_id)
         self.add_item(ShizaButton("🎵 Литвин", "/home/bot/litvin.mp3", guild_id))
         self.add_item(ShizaButton("💫 Сигма", "/home/bot/sigma.mp3", guild_id))
+        self.add_item(ShizaButton("🚽 скибиди фортнайт", "/home/bot/skibidifortnite.mp3", guild_id))
+        self.add_item(ShizaButton("🇷🇺 🤟 z руссский", "/home/bot/Smellslikeirusskiy.mp3", guild_id))
         self.add_item(StopShizaButton(guild_id))
 
 class ShizaButton(discord.ui.Button):
@@ -493,19 +410,40 @@ class ShizaButton(discord.ui.Button):
             await interaction.followup.send("Вы должны находиться в голосовом канале!", ephemeral=True)
             return
 
+        # Проверяем, может ли бот подключиться к каналу
+        if not interaction.user.voice.channel.permissions_for(interaction.guild.me).connect:
+            await interaction.followup.send("У меня нет прав для подключения к голосовому каналу!", ephemeral=True)
+            return
+
+        # Проверяем, может ли бот говорить в канале
+        if not interaction.user.voice.channel.permissions_for(interaction.guild.me).speak:
+            await interaction.followup.send("У меня нет прав для воспроизведения звука в голосовом канале!", ephemeral=True)
+            return
+
         voice_client = server_voice_clients.get(self.guild_id)
 
         if voice_client is None:
-            voice_client = await interaction.user.voice.channel.connect()
-            server_voice_clients[self.guild_id] = voice_client
+            try:
+                voice_client = await interaction.user.voice.channel.connect()
+                server_voice_clients[self.guild_id] = voice_client
+            except discord.ClientException as e:
+                await interaction.followup.send(f"Не удалось подключиться к голосовому каналу: {str(e)}", ephemeral=True)
+                return
         elif voice_client.channel != interaction.user.voice.channel:
-            await voice_client.move_to(interaction.user.voice.channel)
+            try:
+                await voice_client.move_to(interaction.user.voice.channel)
+            except discord.ClientException:
+                await interaction.followup.send("Не удалось переключиться на другой голосовой канал!", ephemeral=True)
+                return
 
         if voice_client.is_playing():
             voice_client.stop()
 
         server_states[self.guild_id]['is_playing_shiza'] = True
         asyncio.create_task(play_shiza_loop(voice_client, self.file_path, self.guild_id))
+
+        # Update bot status
+        await update_bot_status(discord.ActivityType.listening, self.label)
 
         embed = discord.Embed(
             title="🎪 Шиза Плеер",
@@ -529,9 +467,16 @@ class StopShizaButton(discord.ui.Button):
 
         if voice_client and voice_client.is_connected():
             server_states[self.guild_id]['is_playing_shiza'] = False
-            voice_client.stop()
-            await voice_client.disconnect()
-            server_voice_clients.pop(self.guild_id, None)
+            try:
+                voice_client.stop()
+                await voice_client.disconnect()
+            except Exception as e:
+                print(f"Ошибка при отключении: {e}")
+            finally:
+                server_voice_clients.pop(self.guild_id, None)
+            
+            # Reset bot status
+            await update_bot_status(discord.ActivityType.watching, "за сервером")
             
             embed = discord.Embed(
                 title="🎪 Шиза Плеер",
@@ -540,8 +485,15 @@ class StopShizaButton(discord.ui.Button):
             )
             embed.set_image(url="https://i.pinimg.com/originals/c5/52/8e/c5528e6c4bb0a0ed0b7a3fcf127c68a2.gif")
             
-            message = interaction.message
-            await message.edit(embed=embed, view=self.view)
+            try:
+                message = interaction.message
+                await message.edit(embed=embed, view=self.view)
+            except discord.NotFound:
+                # Если сообщение уже удалено, пытаемся отправить новое
+                try:
+                    await interaction.channel.send(embed=embed, view=self.view)
+                except:
+                    pass
         else:
             await interaction.followup.send("Сейчас ничего не воспроизводится!", ephemeral=True)
 
@@ -553,14 +505,26 @@ async def play_shiza_loop(voice_client, file_path, guild_id):
             
             while voice_client.is_playing():
                 await asyncio.sleep(0.1)
-                if not server_states[guild_id]['is_playing_shiza']:
+                if not server_states[guild_id]['is_playing_shiza'] or not voice_client.is_connected():
                     voice_client.stop()
+                    # Даем время на завершение процесса ffmpeg
+                    await asyncio.sleep(0.5)
                     return
                     
             await asyncio.sleep(0.5)
             
         except Exception as e:
             print(f"Ошибка воспроизведения: {e}")
+            # Очищаем состояние при ошибке
+            server_states[guild_id]['is_playing_shiza'] = False
+            if guild_id in server_voice_clients:
+                try:
+                    if voice_client.is_playing():
+                        voice_client.stop()
+                        await asyncio.sleep(0.5)
+                except:
+                    pass
+                server_voice_clients.pop(guild_id, None)
             break
 
 @bot.tree.command(name="shiza", description="Включить зацикленное воспроизведение песен")
@@ -576,8 +540,11 @@ async def shiza(interaction: discord.Interaction):
 
 @bot.tree.command(name="gpt", description="Сгенерировать текст с помощью GPT.")
 async def gpt(interaction: discord.Interaction, prompt: str):
+    # Update bot status
+    await update_bot_status("custom", "генерирует текст")
+    
     client = Client()
-    models = ["gpt-4o"]
+    models = ["deepseek-v3"]
     await interaction.response.defer()
 
     loop = asyncio.get_event_loop()
@@ -599,14 +566,21 @@ async def gpt(interaction: discord.Interaction, prompt: str):
                 content = response.choices[0].content
                 
             await interaction.followup.send(content)
+            # Reset status after generation
+            await update_bot_status(discord.ActivityType.watching, "за сервером")
             return
         except Exception as e:
             print(f"Ошибка при использовании модели {model}: {e}")
 
     await interaction.followup.send("Извините, произошла ошибка при обработке запроса. Попробуйте позже.")
+    # Reset status after error
+    await update_bot_status(discord.ActivityType.watching, "за сервером")
 
 @bot.tree.command(name="image", description="Генерация изображения по запросу")
 async def image(interaction: discord.Interaction, prompt: str):
+    # Update bot status
+    await update_bot_status("custom", "генерирует изображение")
+    
     await interaction.response.defer()
     
     try:
@@ -629,6 +603,9 @@ async def image(interaction: discord.Interaction, prompt: str):
             
     except Exception as e:
         await interaction.followup.send(f"Произошла ошибка при генерации изображения: {str(e)}")
+    
+    # Reset status after generation or error
+    await update_bot_status(discord.ActivityType.watching, "за сервером")
 
 @bot.tree.command(name="clear", description="Очистить чат от сообщений бота и команд.")
 async def clear(interaction: discord.Interaction):
@@ -638,7 +615,7 @@ async def clear(interaction: discord.Interaction):
     deleted = await interaction.channel.purge(limit=100, check=is_bot_or_command_message)
     await interaction.response.send_message(f"Удалено {len(deleted)} сообщений.", ephemeral=True)
 
-@bot.tree.command(name="clearall", description="Очистить чат от всех сообщений.")
+@bot.tree.command(name="clearall", description="Очистить чат от всех сообщений (только для администратора)")
 async def clearall(interaction: discord.Interaction):
     if interaction.user.id != ADMIN_USER_ID:
         await interaction.response.send_message("У вас нет прав на выполнение этой команды.", ephemeral=True)
@@ -665,10 +642,7 @@ async def restart(interaction: discord.Interaction):
         
         server_states.clear()
         server_voice_clients.clear()
-        server_kick_limits.clear()
         server_radio_messages.clear()
-        
-        reset_kick_limits.stop()
         
         python = sys.executable
         os.execl(python, python, *sys.argv)
@@ -677,7 +651,7 @@ async def restart(interaction: discord.Interaction):
         await interaction.followup.send(f"Ошибка при перезапуске: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="spam", description="Удалить сообщения с упоминаниями.")
-async def spam(interaction: discord.Interaction, count: int = None):
+async def spam(interaction: discord.Interaction, skolko: int = None):
     try:
         await interaction.response.defer(ephemeral=True)
 
@@ -686,7 +660,7 @@ async def spam(interaction: discord.Interaction, count: int = None):
             has_everyone = message.mention_everyone
             return has_mentions or has_everyone
 
-        if count is None:
+        if skolko is None:
             deleted = await interaction.channel.purge(limit=1000, check=is_mention)
             try:
                 await interaction.followup.send(f"Удалено {len(deleted)} сообщений с упоминаниями.")
@@ -694,7 +668,7 @@ async def spam(interaction: discord.Interaction, count: int = None):
                 pass
             return
 
-        if count < 1:
+        if skolko < 1:
             try:
                 await interaction.followup.send("Количество должно быть больше 0.")
             except:
@@ -704,13 +678,13 @@ async def spam(interaction: discord.Interaction, count: int = None):
         deleted_count = 0
         batch_size = 100
         
-        while deleted_count < count:
+        while deleted_count < skolko:
             messages_to_delete = []
             async for message in interaction.channel.history(limit=batch_size):
                 if is_mention(message):
                     messages_to_delete.append(message)
                     deleted_count += 1
-                    if deleted_count >= count:
+                    if deleted_count >= skolko:
                         break
             
             if not messages_to_delete:
@@ -725,7 +699,7 @@ async def spam(interaction: discord.Interaction, count: int = None):
             elif messages_to_delete:
                 await messages_to_delete[0].delete()
 
-        if deleted_count == count:
+        if deleted_count == skolko:
             try:
                 await interaction.followup.send(f"Удалено {deleted_count} сообщений с упоминаниями.")
             except:
@@ -742,39 +716,30 @@ async def spam(interaction: discord.Interaction, count: int = None):
         except:
             pass
 
-@bot.tree.command(name="down", description="Удалить все каналы сервера, кроме защищенных")
-async def down(interaction: discord.Interaction):
-    if interaction.user.id != ADMIN_USER_ID:
-        await interaction.response.send_message("У вас нет прав на выполнение этой команды.", ephemeral=True)
-        return
-
-    protected_channels = [1343943218601005167, 1343943252856012843, 1351109433622659092]
-    deleted_count = 0
-    
-    await interaction.response.defer(ephemeral=True)
-    
-    try:
-        for channel in interaction.guild.channels:
-            if channel.id not in protected_channels:
-                try:
-                    await channel.delete()
-                    deleted_count += 1
-                except discord.Forbidden:
-                    continue
-                except discord.HTTPException:
-                    continue
-        
-        await interaction.followup.send(f"Удалено {deleted_count} каналов.")
-    except Exception as e:
-        await interaction.followup.send(f"Произошла ошибка при удалении каналов: {str(e)}")
-
 @bot.event
 async def on_ready():
     print(f'Бот {bot.user} готов к работе!')
-    reset_kick_limits.start()
     
     for guild in bot.guilds:
         init_server_state(guild.id)
+    
+    # Sync commands
+    try:
+        await bot.tree.sync()
+        print("Команды успешно синхронизированы!")
+    except Exception as e:
+        print(f"Ошибка при синхронизации команд: {e}")
+    
+    # Set initial status
+    await bot.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="за сервером"), status=discord.Status.online)
+
+async def update_bot_status(activity_type, name):
+    """Helper function to update bot status"""
+    if activity_type == "custom":
+        await bot.change_presence(activity=discord.Activity(name=name), status=discord.Status.online)
+    else:
+        activity = discord.Activity(type=activity_type, name=name)
+        await bot.change_presence(activity=activity, status=discord.Status.online)
 
 @bot.event
 async def on_guild_join(guild):
@@ -785,7 +750,6 @@ async def on_guild_join(guild):
 async def on_guild_remove(guild):
     server_states.pop(guild.id, None)
     server_voice_clients.pop(guild.id, None)
-    server_kick_limits.pop(guild.id, None)
     server_radio_messages.pop(guild.id, None)
     print(f'Бот покинул сервер: {guild.name}')
 
