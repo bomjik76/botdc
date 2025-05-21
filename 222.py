@@ -62,7 +62,8 @@ class MusicPlayer:
         self.max_duration = 7200  # Maximum duration in seconds (2 hours)
         self.player_message = None
         self.view = None
-        self.loop = False  # Add loop state
+        self.loop = False  # Loop state (all queue)
+        self.loop_current = False  # Loop current track only
         
         # Configure yt-dlp options with optimized settings for both YouTube and SoundCloud
         self.ytdl_opts = {
@@ -152,22 +153,57 @@ class MusicPlayer:
             
     async def play_next(self):
         """Play the next track in the queue"""
-        if not self.queue and not self.loop:
+        if not self.queue and not self.loop and not (self.loop_current and self.current_track):
             self.is_playing = False
             self.current_track = None
             if self.view:
                 await self.view.update_player_message()
             return
             
-        if self.loop and self.current_track:
-            # If loop is enabled and we have a current track, add it back to the queue
-            self.queue.append(self.current_track)
+        # Handle looping the current track
+        if self.loop_current and self.current_track:
+            # Keep the same track for replay
+            track_to_play = self.current_track
+        else:
+            # Handle queue looping - only add current track back if we're looping the whole queue
+            if self.loop and self.current_track and not self.loop_current:
+                # Add the current track to the end of the queue for queue looping
+                self.queue.append(self.current_track)
             
-        self.current_track = self.queue.popleft()
+            # If queue is empty now, we can't continue
+            if not self.queue:
+                self.is_playing = False
+                self.current_track = None
+                if self.view:
+                    await self.view.update_player_message()
+                return
+                
+            # Get the next track from queue
+            track_to_play = self.queue.popleft()
+            self.current_track = track_to_play
+            
         try:
-            # Use the playback_url directly since we already have it
+            # Make sure we have a playback_url
+            if 'playback_url' not in track_to_play:
+                # Try to get the playback URL if it doesn't exist
+                with yt_dlp.YoutubeDL(self.ytdl_opts) as ydl:
+                    info = ydl.extract_info(track_to_play['url'], download=False)
+                    if 'url' in info:
+                        track_to_play['playback_url'] = info['url']
+                    else:
+                        # Try to get URL from formats
+                        formats = info.get('formats', [])
+                        if formats:
+                            audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                            if audio_formats:
+                                audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
+                                track_to_play['playback_url'] = audio_formats[0]['url']
+                            else:
+                                track_to_play['playback_url'] = formats[0]['url']
+            
+            # Create audio source and play
             audio_source = PCMVolumeTransformer(
-                FFmpegPCMAudio(self.current_track['playback_url'], **FFMPEG_OPTS),
+                FFmpegPCMAudio(track_to_play['playback_url'], **FFMPEG_OPTS),
                 volume=self.volume
             )
             
@@ -185,6 +221,7 @@ class MusicPlayer:
             
         except Exception as e:
             print(f"Error playing track: {e}")
+            # Skip this track and move to the next one
             await self.play_next()
             
     def skip(self):
@@ -1141,9 +1178,26 @@ class MusicPlayerView(discord.ui.View):
         if not self.player.voice_client:
             await interaction.response.send_message("Сейчас ничего не играет!", ephemeral=True)
             return
-            
-        self.player.loop = not self.player.loop
-        button.style = discord.ButtonStyle.success if self.player.loop else discord.ButtonStyle.secondary
+        
+        # Cycle through loop states: No loop -> Loop current track -> Loop queue -> No loop
+        if not self.player.loop and not self.player.loop_current:
+            # No loop -> Loop current track
+            self.player.loop_current = True
+            self.player.loop = False
+            button.label = "🔂"  # Loop current track symbol
+            button.style = discord.ButtonStyle.success
+        elif self.player.loop_current:
+            # Loop current track -> Loop queue
+            self.player.loop_current = False
+            self.player.loop = True
+            button.label = "🔁"  # Loop queue symbol
+            button.style = discord.ButtonStyle.success
+        else:
+            # Loop queue -> No loop
+            self.player.loop = False
+            self.player.loop_current = False
+            button.label = "🔁"
+            button.style = discord.ButtonStyle.secondary
         
         await self.update_player_message(interaction)
 
@@ -1274,6 +1328,26 @@ class MusicPlayerView(discord.ui.View):
         
         await interaction.response.send_modal(modal)
 
+    @discord.ui.button(label="🔉", style=discord.ButtonStyle.secondary, custom_id="volume_down")
+    async def volume_down(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.player.voice_client:
+            await interaction.response.send_message("Сейчас ничего не играет!", ephemeral=True)
+            return
+
+        # Decrease volume by 10%
+        self.player.set_volume(max(0.0, self.player.volume - 0.1))
+        await self.update_player_message(interaction)
+
+    @discord.ui.button(label="🔊", style=discord.ButtonStyle.secondary, custom_id="volume_up")
+    async def volume_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.player.voice_client:
+            await interaction.response.send_message("Сейчас ничего не играет!", ephemeral=True)
+            return
+
+        # Increase volume by 10% (max 2.0)
+        self.player.set_volume(min(2.0, self.player.volume + 0.1))
+        await self.update_player_message(interaction)
+
     async def update_player_message(self, interaction: discord.Interaction = None):
         if not self.message:
             return
@@ -1330,7 +1404,16 @@ class MusicPlayerView(discord.ui.View):
             embed.description += f"**Длительность:** {minutes}:{seconds:02d}\n"
             embed.description += f"**Добавил:** {self.player.current_track.get('user', 'Unknown User').mention}\n"
             embed.description += f"**Статус:** {status}\n"
-            embed.description += f"**Повтор:** {'🔁 Включен' if self.player.loop else 'Выключен'}\n"
+            embed.description += f"**Громкость:** {int(self.player.volume * 100)}%\n"
+            
+            # Show looping status with appropriate emoji
+            if self.player.loop_current:
+                embed.description += f"**Повтор:** 🔂 Текущий трек\n"
+            elif self.player.loop:
+                embed.description += f"**Повтор:** 🔁 Вся очередь\n"
+            else:
+                embed.description += f"**Повтор:** Выключен\n"
+                
             embed.description += f"**Ссылка:** [Нажмите здесь]({self.player.current_track.get('url', '')})"
             
             # Show next 3 tracks in queue with platform indicators
