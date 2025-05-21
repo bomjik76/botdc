@@ -165,12 +165,9 @@ class MusicPlayer:
             
         self.current_track = self.queue.popleft()
         try:
-            with yt_dlp.YoutubeDL(self.ytdl_opts) as ydl:
-                info = ydl.extract_info(self.current_track['url'], download=False)
-                url2 = info['url']
-                
+            # Use the playback_url directly since we already have it
             audio_source = PCMVolumeTransformer(
-                FFmpegPCMAudio(url2, **FFMPEG_OPTS),
+                FFmpegPCMAudio(self.current_track['playback_url'], **FFMPEG_OPTS),
                 volume=self.volume
             )
             
@@ -1194,19 +1191,48 @@ class MusicPlayerView(discord.ui.View):
                     # Get track info
                     with yt_dlp.YoutubeDL(self.player.ytdl_opts) as ydl:
                         info = ydl.extract_info(self.url.value, download=False)
+                        
+                        # Determine platform and get metadata
+                        platform = 'soundcloud' if 'soundcloud.com' in self.url.value else 'youtube'
+                        thumbnail = info.get('thumbnail')
+                        if not thumbnail and platform == 'soundcloud':
+                            thumbnail = info.get('artwork_url')
+                            
+                        # Get the direct URL for playback
+                        if 'url' not in info:
+                            # Try to get the URL from formats
+                            formats = info.get('formats', [])
+                            if formats:
+                                # Get the best audio format
+                                audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+                                if audio_formats:
+                                    # Sort by quality and get the best one
+                                    audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
+                                    playback_url = audio_formats[0]['url']
+                                else:
+                                    # Fallback to the first format if no audio-only format is found
+                                    playback_url = formats[0]['url']
+                            else:
+                                raise Exception("Could not find a playable URL for this track")
+                        else:
+                            playback_url = info['url']
+                            
                         track = {
-                            'url': self.url.value,
+                            'url': self.url.value,  # Original URL for display
+                            'playback_url': playback_url,  # Direct URL for playback
                             'title': info.get('title', 'Неизвестное название'),
                             'duration': info.get('duration', 0),
-                            'user': interaction.user
+                            'user': interaction.user,
+                            'platform': platform,
+                            'thumbnail': thumbnail,
+                            'uploader': info.get('uploader', info.get('artist', 'Unknown Artist'))
                         }
 
                     # Start playing if not already playing
                     if not self.player.is_playing:
                         # Prepare audio before starting playback
-                        url2 = info['url']
                         audio_source = PCMVolumeTransformer(
-                            FFmpegPCMAudio(url2, **FFMPEG_OPTS),
+                            FFmpegPCMAudio(track['playback_url'], **FFMPEG_OPTS),
                             volume=self.player.volume
                         )
                         
@@ -1282,6 +1308,8 @@ class MusicPlayerView(discord.ui.View):
             else:  # SoundCloud
                 thumbnail = self.player.current_track.get('thumbnail')
                 if thumbnail:
+                    # Replace t500x500 with t300x300 for better Discord compatibility
+                    thumbnail = thumbnail.replace('t500x500', 't300x300')
                     embed.set_thumbnail(url=thumbnail)
                     embed.set_image(url=thumbnail)
                 else:
@@ -1295,7 +1323,7 @@ class MusicPlayerView(discord.ui.View):
             seconds = int(duration % 60)
             
             # Add platform-specific emoji
-            platform_emoji = "🎵" if platform == 'soundcloud' else "🎥"
+            platform_emoji = "🎵"  # Use music note for all tracks
             
             embed.description = f"**Сейчас играет:** {platform_emoji} {self.player.current_track.get('title', 'Unknown Title')}\n"
             embed.description += f"**Исполнитель:** {self.player.current_track.get('uploader', 'Unknown Artist')}\n"

@@ -20,6 +20,9 @@ server_states = {}
 server_voice_clients = {}
 server_radio_messages = {}
 
+# Словарь для отслеживания спама с @ упоминаниями
+mention_spam_tracker = {}
+
 # Переменные для управления воспроизведением звука и радио
 is_playing_shiza = False
 voice_client = None
@@ -142,6 +145,62 @@ async def on_voice_state_update(member, before, after):
         
         # Сбрасываем статус бота
         await update_bot_status(discord.ActivityType.watching, "за сервером")
+
+@bot.event
+async def on_message(message):
+    # Пропускаем сообщения от бота
+    if message.author.bot:
+        return
+
+    # Проверяем наличие @ упоминаний
+    has_mentions = len(message.mentions) > 0 or len(message.role_mentions) > 0 or message.mention_everyone
+
+    if has_mentions:
+        user_id = message.author.id
+        guild_id = message.guild.id
+
+        # Инициализируем трекер для пользователя если его нет
+        if guild_id not in mention_spam_tracker:
+            mention_spam_tracker[guild_id] = {}
+        if user_id not in mention_spam_tracker[guild_id]:
+            mention_spam_tracker[guild_id][user_id] = {
+                'count': 0,
+                'last_message_time': datetime.datetime.now(),
+                'warned': False
+            }
+
+        # Получаем данные пользователя
+        user_data = mention_spam_tracker[guild_id][user_id]
+        current_time = datetime.datetime.now()
+
+        # Проверяем, прошло ли 10 секунд с последнего сообщения
+        if (current_time - user_data['last_message_time']).total_seconds() > 10:
+            # Сбрасываем счетчик если прошло больше 10 секунд
+            user_data['count'] = 1
+            user_data['warned'] = False
+        else:
+            user_data['count'] += 1
+
+        user_data['last_message_time'] = current_time
+
+        # Проверяем количество сообщений
+        if user_data['count'] >= 4:
+            if not user_data['warned']:
+                # Отправляем предупреждение
+                await message.channel.send(f"{message.author.mention}, спамер ебаный стоп нахуй, заебало чистить говно за тобой")
+                user_data['warned'] = True
+            else:
+                # Выдаем таймаут
+                try:
+                    await message.author.timeout(datetime.timedelta(seconds=60), reason="Спам упоминаниями")
+                    # Сбрасываем счетчик после таймаута
+                    user_data['count'] = 0
+                    user_data['warned'] = False
+                except discord.Forbidden:
+                    await message.channel.send("У меня нет прав для выдачи таймаута.")
+
+    # Важно: не забываем обрабатывать команды
+    await bot.process_commands(message)
 
 class RadioView(discord.ui.View):
     def __init__(self, radio_urls, guild_id):
@@ -715,6 +774,48 @@ async def spam(interaction: discord.Interaction, skolko: int = None):
             await interaction.followup.send(f"Произошла ошибка: {str(e)}")
         except:
             pass
+
+@bot.tree.command(name="del", description="Удалить N сообщений выбранного пользователя (только для администратора)")
+async def del_messages(interaction: discord.Interaction, user: discord.Member, amount: int):
+    if interaction.user.id != ADMIN_USER_ID:
+        await interaction.response.send_message("У вас нет прав на выполнение этой команды.", ephemeral=True)
+        return
+
+    if amount < 1:
+        await interaction.response.send_message("Количество должно быть больше 0.", ephemeral=True)
+        return
+
+    try:
+        await interaction.response.defer(ephemeral=True)
+        
+        deleted_count = 0
+        batch_size = 100
+        
+        while deleted_count < amount:
+            messages_to_delete = []
+            async for message in interaction.channel.history(limit=batch_size):
+                if message.author.id == user.id:
+                    messages_to_delete.append(message)
+                    deleted_count += 1
+                    if deleted_count >= amount:
+                        break
+            
+            if not messages_to_delete:
+                await interaction.followup.send(f"Найдено только {deleted_count} сообщений от пользователя {user.mention}.", ephemeral=True)
+                break
+                
+            if len(messages_to_delete) > 1:
+                await interaction.channel.delete_messages(messages_to_delete)
+            elif messages_to_delete:
+                await messages_to_delete[0].delete()
+
+        if deleted_count == amount:
+            await interaction.followup.send(f"Удалено {deleted_count} сообщений от пользователя {user.mention}.", ephemeral=True)
+
+    except discord.Forbidden:
+        await interaction.followup.send("У меня нет прав на удаление сообщений.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"Произошла ошибка: {str(e)}", ephemeral=True)
 
 @bot.event
 async def on_ready():
