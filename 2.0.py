@@ -12,6 +12,7 @@ from collections import deque
 import re
 import urllib.parse
 import json
+from dotenv import load_dotenv
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -92,6 +93,13 @@ class MusicPlayer:
             'no_color': True,      # Disable color output
             'geo_bypass': True,    # Bypass geographic restrictions
             'geo_verification_proxy': None,  # Disable geo verification proxy
+            'extractor_retries': 5, # Retry extractor operation 5 times
+            'http_headers': {  # Use a more browser-like User-Agent
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+            }
         }
         
     async def add_to_queue(self, url, user):
@@ -138,8 +146,28 @@ class MusicPlayer:
                     if not thumbnail and platform == 'soundcloud':
                         thumbnail = info.get('artwork_url')
                         
+                    # Get the direct URL for playback
+                    if 'url' not in info:
+                        # Try to get the URL from formats
+                        formats = info.get('formats', [])
+                        if formats:
+                            # Get the best audio format
+                            audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                            if audio_formats:
+                                # Sort by quality and get the best one
+                                audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
+                                playback_url = audio_formats[0]['url']
+                            else:
+                                # Fallback to the first format if no audio-only format is found
+                                playback_url = formats[0]['url']
+                        else:
+                            raise Exception("Could not find a playable URL for this track")
+                    else:
+                        playback_url = info['url']
+                        
                     track = {
                         'url': url,
+                        'playback_url': playback_url,  # Store direct playback URL
                         'title': info.get('title', 'Unknown Title'),
                         'duration': info.get('duration', 0),
                         'user': user,
@@ -185,9 +213,8 @@ class MusicPlayer:
             self.current_track = track_to_play
             
         try:
-            # Make sure we have a playback_url
-            if 'playback_url' not in track_to_play:
-                # Try to get the playback URL if it doesn't exist
+            # Always get a fresh playback URL to avoid 403 errors
+            try:
                 with yt_dlp.YoutubeDL(self.ytdl_opts) as ydl:
                     info = ydl.extract_info(track_to_play['url'], download=False)
                     if 'url' in info:
@@ -202,6 +229,11 @@ class MusicPlayer:
                                 track_to_play['playback_url'] = audio_formats[0]['url']
                             else:
                                 track_to_play['playback_url'] = formats[0]['url']
+            except Exception as e:
+                print(f"Error refreshing playback URL: {e}")
+                # If we can't refresh, try to use existing playback_url if available
+                if 'playback_url' not in track_to_play:
+                    raise Exception(f"Failed to get playback URL for {track_to_play.get('title', 'Unknown track')}")
             
             # Create audio source and play
             audio_source = PCMVolumeTransformer(
@@ -260,8 +292,8 @@ class MusicPlayer:
 
 # FFmpeg options for audio playback
 FFMPEG_OPTS = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn -b:a 192k'  # Added bitrate limit for better performance
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -timeout 10000000',
+    'options': '-vn -b:a 192k -bufsize 1024k'  # Added bitrate limit and buffer size for better performance
 }
 
 # Dictionary to store music players for each guild
@@ -1238,24 +1270,32 @@ class MusicPlayerView(discord.ui.View):
                         'extract_flat': True,
                         'skip_download': True,
                         'format': 'bestaudio/best',
+                        'extractor_retries': 5,
+                        'http_headers': {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                        }
                     }
                     
                     search_results = []
                     with yt_dlp.YoutubeDL(search_opts) as ydl:
                         # Use ytsearch prefix to search YouTube
-                        info = ydl.extract_info(f"ytsearch5:{self.search_query.value}", download=False)
-                        
-                        if 'entries' in info:
-                            search_results = [
-                                {
-                                    'title': entry.get('title', 'Unknown Title'),
-                                    'url': entry.get('url', ''),
-                                    'uploader': entry.get('uploader', 'Unknown Artist'),
-                                    'duration': entry.get('duration', 0),
-                                    'thumbnail': entry.get('thumbnail', ''),
-                                }
-                                for entry in info['entries'] if entry
-                            ]
+                        try:
+                            info = ydl.extract_info(f"ytsearch5:{self.search_query.value}", download=False)
+                            
+                            if 'entries' in info:
+                                search_results = [
+                                    {
+                                        'title': entry.get('title', 'Unknown Title'),
+                                        'url': entry.get('url', ''),
+                                        'uploader': entry.get('uploader', 'Unknown Artist'),
+                                        'duration': entry.get('duration', 0),
+                                        'thumbnail': entry.get('thumbnail', ''),
+                                    }
+                                    for entry in info['entries'] if entry
+                                ]
+                        except Exception as e:
+                            await interaction.followup.send(f"Ошибка поиска: {str(e)}")
+                            return
                     
                     if not search_results:
                         await interaction.followup.send(f"По запросу '{self.search_query.value}' ничего не найдено")
@@ -1340,71 +1380,82 @@ class MusicPlayerView(discord.ui.View):
                     elif self.player.voice_client.channel != interaction.user.voice.channel:
                         await self.player.voice_client.move_to(interaction.user.voice.channel)
 
+                    # Get track info with enhanced options
+                    ytdl_opts = self.player.ytdl_opts.copy()
+                    
                     # Get track info
-                    with yt_dlp.YoutubeDL(self.player.ytdl_opts) as ydl:
-                        info = ydl.extract_info(self.url.value, download=False)
-                        
-                        # Determine platform and get metadata
-                        platform = 'soundcloud' if 'soundcloud.com' in self.url.value else 'youtube'
-                        thumbnail = info.get('thumbnail')
-                        if not thumbnail and platform == 'soundcloud':
-                            thumbnail = info.get('artwork_url')
+                    try:
+                        with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+                            info = ydl.extract_info(self.url.value, download=False)
                             
-                        # Get the direct URL for playback
-                        if 'url' not in info:
-                            # Try to get the URL from formats
-                            formats = info.get('formats', [])
-                            if formats:
-                                # Get the best audio format
-                                audio_formats = [f for f in formats if f.get('acodec') != 'none']
-                                if audio_formats:
-                                    # Sort by quality and get the best one
-                                    audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
-                                    playback_url = audio_formats[0]['url']
+                            # Determine platform and get metadata
+                            platform = 'soundcloud' if 'soundcloud.com' in self.url.value else 'youtube'
+                            thumbnail = info.get('thumbnail')
+                            if not thumbnail and platform == 'soundcloud':
+                                thumbnail = info.get('artwork_url')
+                                
+                            # Get the direct URL for playback
+                            if 'url' not in info:
+                                # Try to get the URL from formats
+                                formats = info.get('formats', [])
+                                if formats:
+                                    # Get the best audio format
+                                    audio_formats = [f for f in formats if f.get('acodec') != 'none']
+                                    if audio_formats:
+                                        # Sort by quality and get the best one
+                                        audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
+                                        playback_url = audio_formats[0]['url']
+                                    else:
+                                        # Fallback to the first format if no audio-only format is found
+                                        playback_url = formats[0]['url']
                                 else:
-                                    # Fallback to the first format if no audio-only format is found
-                                    playback_url = formats[0]['url']
+                                    raise Exception("Could not find a playable URL for this track")
                             else:
-                                raise Exception("Could not find a playable URL for this track")
-                        else:
-                            playback_url = info['url']
-                            
-                        track = {
-                            'url': self.url.value,  # Original URL for display
-                            'playback_url': playback_url,  # Direct URL for playback
-                            'title': info.get('title', 'Неизвестное название'),
-                            'duration': info.get('duration', 0),
-                            'user': interaction.user,
-                            'platform': platform,
-                            'thumbnail': thumbnail,
-                            'uploader': info.get('uploader', info.get('artist', 'Unknown Artist'))
-                        }
+                                playback_url = info['url']
+                                
+                            track = {
+                                'url': self.url.value,  # Original URL for display
+                                'playback_url': playback_url,  # Direct URL for playback
+                                'title': info.get('title', 'Неизвестное название'),
+                                'duration': info.get('duration', 0),
+                                'user': interaction.user,
+                                'platform': platform,
+                                'thumbnail': thumbnail,
+                                'uploader': info.get('uploader', info.get('artist', 'Unknown Artist'))
+                            }
+                    except Exception as e:
+                        await interaction.followup.send(f"Ошибка получения информации о треке: {str(e)}", ephemeral=True)
+                        return
 
                     # Start playing if not already playing
                     if not self.player.is_playing:
-                        # Prepare audio before starting playback
-                        audio_source = PCMVolumeTransformer(
-                            FFmpegPCMAudio(track['playback_url'], **FFMPEG_OPTS),
-                            volume=self.player.volume
-                        )
-                        
-                        def after_playing(error):
-                            if error:
-                                print(f"Error in after_playing: {error}")
-                            asyncio.run_coroutine_threadsafe(self.player.play_next(), self.player.voice_client.loop)
-                        
-                        self.player.voice_client.play(audio_source, after=after_playing)
-                        self.player.is_playing = True
-                        self.player.current_track = track  # Set current track
-                        
-                        # Update message after playback has started
-                        await asyncio.sleep(0.1)  # Small delay to ensure playback has started
-                        embed = await self.view.create_player_embed()
                         try:
-                            await self.view.message.edit(embed=embed, view=self.view)
-                        except discord.NotFound:
-                            # If message was deleted, send a new one
-                            self.view.message = await interaction.channel.send(embed=embed, view=self.view)
+                            # Prepare audio before starting playback
+                            audio_source = PCMVolumeTransformer(
+                                FFmpegPCMAudio(track['playback_url'], **FFMPEG_OPTS),
+                                volume=self.player.volume
+                            )
+                            
+                            def after_playing(error):
+                                if error:
+                                    print(f"Error in after_playing: {error}")
+                                asyncio.run_coroutine_threadsafe(self.player.play_next(), self.player.voice_client.loop)
+                            
+                            self.player.voice_client.play(audio_source, after=after_playing)
+                            self.player.is_playing = True
+                            self.player.current_track = track  # Set current track
+                            
+                            # Update message after playback has started
+                            await asyncio.sleep(0.1)  # Small delay to ensure playback has started
+                            embed = await self.view.create_player_embed()
+                            try:
+                                await self.view.message.edit(embed=embed, view=self.view)
+                            except discord.NotFound:
+                                # If message was deleted, send a new one
+                                self.view.message = await interaction.channel.send(embed=embed, view=self.view)
+                        except Exception as e:
+                            await interaction.followup.send(f"Ошибка воспроизведения: {str(e)}", ephemeral=True)
+                            return
                     else:
                         # If already playing, add to queue
                         self.player.queue.append(track)
@@ -1535,7 +1586,7 @@ class MusicPlayerView(discord.ui.View):
 # Add after the MusicPlayerView class
 class SearchResultsView(discord.ui.View):
     def __init__(self, results, player, search_query):
-        super().__init__(timeout=60)
+        super().__init__(timeout=300)  # Increase timeout to 5 minutes (300 seconds)
         self.results = results
         self.player = player
         self.search_query = search_query
@@ -1553,7 +1604,7 @@ class SearchResultsView(discord.ui.View):
             
         # Add close button to dismiss search results
         close_button = discord.ui.Button(
-            label="❌ Закрыть", 
+            label="❌ Закрыть результаты", 
             style=discord.ButtonStyle.danger,
             custom_id="close_search_results"
         )
@@ -1563,10 +1614,12 @@ class SearchResultsView(discord.ui.View):
     async def close_search_results(self, interaction: discord.Interaction):
         # Check if the user who clicked is the same one who initiated the search
         if self.message:
+            # Just delete without sending a confirmation message
             await self.message.delete()
+            await interaction.response.defer()
             self.message = None
         else:
-            await interaction.response.send_message("Сообщение уже удалено.", ephemeral=True)
+            await interaction.response.defer()
             
     async def select_track(self, interaction, idx):
         if idx < 0 or idx >= len(self.results):
@@ -1599,62 +1652,77 @@ class SearchResultsView(discord.ui.View):
             elif self.player.voice_client.channel != interaction.user.voice.channel:
                 await self.player.voice_client.move_to(interaction.user.voice.channel)
                 
+            # Get track info with enhanced options
+            ytdl_opts = self.player.ytdl_opts.copy()
+            
             # Get track info
-            with yt_dlp.YoutubeDL(self.player.ytdl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                
-                # Determine platform (YouTube for search results)
-                platform = 'youtube'
+            with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+                try:
+                    info = ydl.extract_info(url, download=False)
                     
-                # Get the direct URL for playback
-                if 'url' not in info:
-                    # Try to get the URL from formats
-                    formats = info.get('formats', [])
-                    if formats:
-                        # Get the best audio format
-                        audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-                        if audio_formats:
-                            # Sort by quality and get the best one
-                            audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
-                            playback_url = audio_formats[0]['url']
+                    # Determine platform (YouTube for search results)
+                    platform = 'youtube'
+                        
+                    # Get the direct URL for playback
+                    if 'url' not in info:
+                        # Try to get the URL from formats
+                        formats = info.get('formats', [])
+                        if formats:
+                            # Get the best audio format
+                            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+                            if audio_formats:
+                                # Sort by quality and get the best one
+                                audio_formats.sort(key=lambda x: x.get('abr', 0), reverse=True)
+                                playback_url = audio_formats[0]['url']
+                            else:
+                                # Fallback to the first format if no audio-only format is found
+                                playback_url = formats[0]['url']
                         else:
-                            # Fallback to the first format if no audio-only format is found
-                            playback_url = formats[0]['url']
+                            raise Exception("Could not find a playable URL for this track")
                     else:
-                        raise Exception("Could not find a playable URL for this track")
-                else:
-                    playback_url = info['url']
-                    
-                track = {
-                    'url': url,  # Original URL for display
-                    'playback_url': playback_url,  # Direct URL for playback
-                    'title': info.get('title', 'Unknown Title'),
-                    'duration': info.get('duration', 0),
-                    'user': interaction.user,
-                    'platform': platform,
-                    'thumbnail': info.get('thumbnail'),
-                    'uploader': info.get('uploader', 'Unknown Artist')
-                }
+                        playback_url = info['url']
+                        
+                    track = {
+                        'url': url,  # Original URL for display
+                        'playback_url': playback_url,  # Direct URL for playback
+                        'title': info.get('title', 'Unknown Title'),
+                        'duration': info.get('duration', 0),
+                        'user': interaction.user,
+                        'platform': platform,
+                        'thumbnail': info.get('thumbnail'),
+                        'uploader': info.get('uploader', 'Unknown Artist')
+                    }
+                except Exception as e:
+                    await interaction.followup.send(f"Ошибка получения информации о треке: {str(e)}")
+                    return
                 
             # Start playing if not already playing
             if not self.player.is_playing:
-                # Prepare audio before starting playback
-                audio_source = PCMVolumeTransformer(
-                    FFmpegPCMAudio(track['playback_url'], **FFMPEG_OPTS),
-                    volume=self.player.volume
-                )
-                
-                def after_playing(error):
-                    if error:
-                        print(f"Error in after_playing: {error}")
-                    asyncio.run_coroutine_threadsafe(self.player.play_next(), self.player.voice_client.loop)
-                
-                self.player.voice_client.play(audio_source, after=after_playing)
-                self.player.is_playing = True
-                self.player.current_track = track  # Set current track
-                
-                # Удаляем сообщение о начале воспроизведения
-                # await interaction.followup.send(f"▶️ Now playing: **{track['title']}**")
+                try:
+                    # Prepare audio before starting playback
+                    audio_source = PCMVolumeTransformer(
+                        FFmpegPCMAudio(track['playback_url'], **FFMPEG_OPTS),
+                        volume=self.player.volume
+                    )
+                    
+                    def after_playing(error):
+                        if error:
+                            print(f"Error in after_playing: {error}")
+                        asyncio.run_coroutine_threadsafe(self.player.play_next(), self.player.voice_client.loop)
+                    
+                    self.player.voice_client.play(audio_source, after=after_playing)
+                    self.player.is_playing = True
+                    self.player.current_track = track  # Set current track
+                    
+                    # Update player message
+                    if self.player.view:
+                        await self.player.view.update_player_message()
+                    
+                    # Don't update the search results message, just leave it as is
+                    
+                except Exception as e:
+                    await interaction.followup.send(f"Ошибка воспроизведения: {str(e)}")
+                    return
             else:
                 # If already playing, add to queue
                 self.player.queue.append(track)
@@ -1662,12 +1730,10 @@ class SearchResultsView(discord.ui.View):
                 # Update player view if it exists
                 if self.player.view:
                     await self.player.view.update_player_message()
-                    
-                # Удаляем сообщение о добавлении в очередь
-                # await interaction.followup.send(f"➕ Added to queue: **{track['title']}**")
+                
+                # Don't update the search results message, just leave it as is
                 
         except Exception as e:
             await interaction.followup.send(f"Error: {str(e)}")
 
-# Запуск бота
 bot.run('')
